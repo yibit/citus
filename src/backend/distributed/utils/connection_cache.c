@@ -53,17 +53,17 @@ GetOrEstablishConnection(char *nodeName, int32 nodePort)
 {
 	int connectionFlags = NEW_CONNECTION | CACHED_CONNECTION | SESSION_LIFESPAN;
 	PGconn *connection = NULL;
-	MultiConnection *mconnection =
+	MultiConnection *multiConnection =
 		GetNodeConnection(connectionFlags, nodeName, nodePort);
 
-	if (PQstatus(mconnection->conn) == CONNECTION_OK)
+	if (PQstatus(multiConnection->conn) == CONNECTION_OK)
 	{
-		connection = mconnection->conn;
+		connection = multiConnection->conn;
 	}
 	else
 	{
-		ReportConnectionError(mconnection, WARNING);
-		CloseConnection(mconnection);
+		ReportConnectionError(multiConnection, WARNING);
+		CloseConnection(multiConnection);
 		connection = NULL;
 	}
 
@@ -79,11 +79,7 @@ GetOrEstablishConnection(char *nodeName, int32 nodePort)
 void
 PurgeConnection(PGconn *connection)
 {
-	NodeConnectionKey nodeConnectionKey;
-
-	BuildKeyForConnection(connection, &nodeConnectionKey);
-
-	PurgeConnectionByKey(&nodeConnectionKey);
+	CloseConnectionByPGconn(connection);
 }
 
 
@@ -127,27 +123,6 @@ BuildKeyForConnection(PGconn *connection, NodeConnectionKey *connectionKey)
 	pfree(nodeNameString);
 	pfree(nodePortString);
 	pfree(nodeUserString);
-}
-
-
-void
-PurgeConnectionByKey(NodeConnectionKey *nodeConnectionKey)
-{
-	int connectionFlags = CACHED_CONNECTION;
-	MultiConnection *connection;
-
-	connection =
-		StartNodeUserDatabaseConnection(
-			connectionFlags,
-			nodeConnectionKey->nodeName,
-			nodeConnectionKey->nodePort,
-			nodeConnectionKey->nodeUser,
-			NULL);
-
-	if (connection)
-	{
-		CloseConnection(connection);
-	}
 }
 
 
