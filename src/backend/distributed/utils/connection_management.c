@@ -35,6 +35,7 @@ static uint32 ConnectionHashHash(const void *key, Size keysize);
 static int ConnectionHashCompare(const void *a, const void *b, Size keysize);
 static MultiConnection * StartConnectionEstablishment(ConnectionHashKey *key);
 static void AfterXactHostConnectionHandling(ConnectionHashEntry *entry, bool isCommit);
+static MultiConnection * FindAvailableConnection(dlist_head *connections, uint32 flags);
 
 
 /*
@@ -168,7 +169,6 @@ StartNodeUserDatabaseConnection(uint32 flags, const char *hostname, int32 port, 
 	MultiConnection *connection;
 	MemoryContext oldContext;
 	bool found;
-	dlist_iter iter;
 
 	/* do some minimal input checks */
 	strlcpy(key.hostname, hostname, MAX_NODE_LENGTH);
@@ -220,44 +220,9 @@ StartNodeUserDatabaseConnection(uint32 flags, const char *hostname, int32 port, 
 	if (flags & CACHED_CONNECTION)
 	{
 		/* check connection cache for a connection that's not already in use */
-		dlist_foreach(iter, entry->connections)
-		{
-			connection = dlist_container(MultiConnection, node, iter.cur);
-
-			/* don't return claimed connections */
-			if (connection->claimedExclusively)
-			{
-				continue;
-			}
-
-			/*
-			 * If we're not allowed to open new connections right now, and the
-			 * current connection hasn't yet been used in this transaction, we
-			 * can't use it.
-			 */
-			if (!connection->activeInTransaction &&
-				XactModificationLevel > XACT_MODIFICATION_DATA)
-			{
-				continue;
-			}
-
-			if (flags & SESSION_LIFESPAN)
-			{
-				connection->sessionLifespan = true;
-			}
-			connection->activeInTransaction = true;
-
-			/*
-			 * One could argue for erroring out when the connection is in a
-			 * failed state. But that'd be a bad idea for two reasons:
-			 *
-			 * 1) Generally starting a connection might fail, after calling
-			 *    this function, so calling code needs to handle that anyway.
-			 * 2) This might be used in code that transparently handles
-			 *    connection failure.
-			 */
+		connection = FindAvailableConnection(entry->connections, flags);
+		if (connection)
 			return connection;
-		}
 	}
 
 	/* no connection available, done if a new connection isn't desirable */
@@ -298,6 +263,55 @@ StartNodeUserDatabaseConnection(uint32 flags, const char *hostname, int32 port, 
 	connection->activeInTransaction = true;
 
 	return connection;
+}
+
+
+/* StartNodeUserDatabaseConnection() helper */
+static MultiConnection *
+FindAvailableConnection(dlist_head *connections, uint32 flags)
+{
+	dlist_iter iter;
+
+	dlist_foreach(iter, connections)
+	{
+		MultiConnection *connection = dlist_container(MultiConnection, node, iter.cur);
+
+		/* don't return claimed connections */
+		if (connection->claimedExclusively)
+		{
+			continue;
+		}
+
+		/*
+		 * If we're not allowed to open new connections right now, and the
+		 * current connection hasn't yet been used in this transaction, we
+		 * can't use it.
+		 */
+		if (!connection->activeInTransaction &&
+			XactModificationLevel > XACT_MODIFICATION_DATA)
+		{
+			continue;
+		}
+
+		if (flags & SESSION_LIFESPAN)
+		{
+			connection->sessionLifespan = true;
+		}
+		connection->activeInTransaction = true;
+
+		/*
+		 * One could argue for erroring out when the connection is in a
+		 * failed state. But that'd be a bad idea for two reasons:
+		 *
+		 * 1) Generally starting a connection might fail, after calling
+		 *    this function, so calling code needs to handle that anyway.
+		 * 2) This might be used in code that transparently handles
+		 *    connection failure.
+		 */
+		return connection;
+	}
+
+	return NULL;
 }
 
 

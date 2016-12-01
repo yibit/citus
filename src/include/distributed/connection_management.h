@@ -70,7 +70,7 @@ typedef struct MultiConnection
 	/* is the connection currently in use, and shouldn't be used by anything else */
 	bool claimedExclusively;
 
-	/* has the connection been used in the current coordinated transaction? */
+	/* is the connection currently part of the coordinated transaction */
 	bool activeInTransaction;
 
 	/* time connection establishment was started, for timeout */
