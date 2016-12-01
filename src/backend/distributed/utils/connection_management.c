@@ -476,7 +476,7 @@ FinishConnectionEstablishment(MultiConnection *connection)
 				/*
 				 * Timeout exceeded. Two things to do:
 				 * - check whether any interrupts arrived and handle them
-				 * - check whether establishment for connection alreadly has
+				 * - check whether establishment for connection already has
 				 *   lasted for too long, stop waiting if so.
 				 */
 				CHECK_FOR_INTERRUPTS();
@@ -539,7 +539,7 @@ ClaimConnectionExclusively(MultiConnection *connection)
 
 /*
  * UnclaimConnection signals that this connection is not being used
- * anymore. That means it again may be returned by returned by
+ * anymore. That means it again may be returned by
  * StartNodeUserDatabaseConnection() et al.
  */
 void
