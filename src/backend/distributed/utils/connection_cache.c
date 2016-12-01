@@ -72,18 +72,6 @@ GetOrEstablishConnection(char *nodeName, int32 nodePort)
 
 
 /*
- * PurgeConnection removes the given connection from the connection hash and
- * closes it using PQfinish. If our hash does not contain the given connection,
- * this method simply prints a warning and exits.
- */
-void
-PurgeConnection(PGconn *connection)
-{
-	CloseConnectionByPGconn(connection);
-}
-
-
-/*
  * Utility method to simplify populating a connection cache key with relevant
  * fields from a provided connection.
  */
@@ -194,13 +182,11 @@ ReportRemoteError(PGconn *connection, PGresult *result, bool raiseError)
 	}
 
 	/*
-	 * If requested, actually raise an error. This necessitates purging the
-	 * connection so it doesn't remain in the hash in an invalid state.
+	 * If requested, actually raise an error.
 	 */
 	if (raiseError)
 	{
 		errorLevel = ERROR;
-		PurgeConnection(connection);
 	}
 
 	if (sqlState == ERRCODE_CONNECTION_FAILURE)
@@ -227,52 +213,27 @@ ReportRemoteError(PGconn *connection, PGresult *result, bool raiseError)
  * the remote encoding to match the local one.  All parameters are required to
  * be non NULL.
  *
- * We attempt to connect up to MAX_CONNECT_ATTEMPT times. After that we give up
- * and return NULL.
- *
- * XXX: We unfortunately can't easily layer this over connection_managment.c
- * as callers close connections themselves using PQfinish().
+ * This is only a thin layer over connection_management.[ch], and will be
+ * removed soon.
  */
 PGconn *
 ConnectToNode(char *nodeName, int32 nodePort, char *nodeUser)
 {
-	const char *dbname = get_database_name(MyDatabaseId);
+	/* don't want already established connections */
+	int connectionFlags = NEW_CONNECTION;
 	PGconn *connection = NULL;
-	const char *clientEncoding = GetDatabaseEncodingName();
-	int attemptIndex = 0;
+	MultiConnection *multiConnection =
+		GetNodeConnection(connectionFlags, nodeName, nodePort);
 
-	const char *keywordArray[] = {
-		"host", "port", "fallback_application_name",
-		"client_encoding", "connect_timeout", "dbname", "user", NULL
-	};
-	char nodePortString[12];
-	const char *valueArray[] = {
-		nodeName, nodePortString, "citus", clientEncoding,
-		CLIENT_CONNECT_TIMEOUT_SECONDS, dbname, nodeUser, NULL
-	};
-
-	sprintf(nodePortString, "%d", nodePort);
-
-	Assert(sizeof(keywordArray) == sizeof(valueArray));
-
-	for (attemptIndex = 0; attemptIndex < MAX_CONNECT_ATTEMPTS; attemptIndex++)
+	if (PQstatus(multiConnection->conn) == CONNECTION_OK)
 	{
-		connection = PQconnectdbParams(keywordArray, valueArray, false);
-		if (PQstatus(connection) == CONNECTION_OK)
-		{
-			break;
-		}
-		else
-		{
-			/* warn if still erroring on final attempt */
-			if (attemptIndex == MAX_CONNECT_ATTEMPTS - 1)
-			{
-				WarnRemoteError(connection, NULL);
-			}
-
-			PQfinish(connection);
-			connection = NULL;
-		}
+		connection = multiConnection->conn;
+	}
+	else
+	{
+		ReportConnectionError(multiConnection, WARNING);
+		CloseConnection(multiConnection);
+		connection = NULL;
 	}
 
 	return connection;

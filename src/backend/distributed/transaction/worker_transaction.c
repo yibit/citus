@@ -236,12 +236,12 @@ SendCommandListToWorkerInSingleTransaction(char *nodeName, int32 nodePort, char 
 		PQgetResult(workerConnection);
 
 		/* we no longer need this connection */
-		PQfinish(workerConnection);
+		CloseConnectionByPGconn(workerConnection);
 	}
 	PG_CATCH();
 	{
 		/* close the connection */
-		PQfinish(workerConnection);
+		CloseConnectionByPGconn(workerConnection);
 
 		PG_RE_THROW();
 	}

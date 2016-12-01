@@ -277,7 +277,7 @@ InitTransactionStateForTask(Task *task)
 			if (PQresultStatus(result) != PGRES_COMMAND_OK)
 			{
 				WarnRemoteError(connection, result);
-				PurgeConnection(connection);
+				CloseConnectionByPGconn(connection);
 
 				connection = NULL;
 			}
@@ -1236,7 +1236,7 @@ GetConnectionForPlacement(ShardPlacement *placement, bool isModificationQuery)
 static void
 PurgeConnectionForPlacement(PGconn *connection, ShardPlacement *placement)
 {
-	PurgeConnection(connection);
+	CloseConnectionByPGconn(connection);
 
 	/*
 	 * The following is logically identical to RemoveXactConnection, but since
@@ -1860,7 +1860,7 @@ ExecuteTransactionEnd(bool commit)
 		else
 		{
 			WarnRemoteError(connection, result);
-			PurgeConnection(participant->connection);
+			CloseConnectionByPGconn(participant->connection);
 
 			participant->connection = NULL;
 		}
