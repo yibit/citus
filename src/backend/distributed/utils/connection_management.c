@@ -222,7 +222,9 @@ StartNodeUserDatabaseConnection(uint32 flags, const char *hostname, int32 port, 
 		/* check connection cache for a connection that's not already in use */
 		connection = FindAvailableConnection(entry->connections, flags);
 		if (connection)
+		{
 			return connection;
+		}
 	}
 
 	/* no connection available, done if a new connection isn't desirable */
