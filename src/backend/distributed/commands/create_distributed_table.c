@@ -9,6 +9,7 @@
  */
 
 #include "postgres.h"
+#include "miscadmin.h"
 
 #include "access/genam.h"
 #include "access/hash.h"
@@ -39,11 +40,14 @@
 #include "distributed/master_protocol.h"
 #include "distributed/metadata_cache.h"
 #include "distributed/metadata_sync.h"
+#include "distributed/multi_copy.h"
 #include "distributed/multi_logical_planner.h"
 #include "distributed/pg_dist_colocation.h"
 #include "distributed/pg_dist_partition.h"
 #include "distributed/reference_table_utils.h"
+#include "distributed/worker_protocol.h"
 #include "distributed/worker_transaction.h"
+#include "executor/executor.h"
 #include "executor/spi.h"
 #include "nodes/execnodes.h"
 #include "nodes/nodeFuncs.h"
@@ -52,9 +56,12 @@
 #include "parser/parse_node.h"
 #include "parser/parse_relation.h"
 #include "parser/parser.h"
+#include "tcop/pquery.h"
+#include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/inval.h"
@@ -68,7 +75,6 @@ static void ConvertToDistributedTable(Oid relationId, char *distributionColumnNa
 static char LookupDistributionMethod(Oid distributionMethodOid);
 static Oid SupportFunctionForColumn(Var *partitionColumn, Oid accessMethodId,
 									int16 supportFunctionNumber);
-static bool LocalTableEmpty(Oid tableId);
 static void ErrorIfNotSupportedConstraint(Relation relation, char distributionMethod,
 										  Var *distributionColumn, uint32 colocationId);
 static void ErrorIfNotSupportedForeignConstraint(Relation relation,
@@ -79,6 +85,7 @@ static void CreateHashDistributedTable(Oid relationId, char *distributionColumnN
 									   char *colocateWithTableName,
 									   int shardCount, int replicationFactor);
 static Oid ColumnType(Oid relationId, char *columnName);
+static void CopyLocalData(Oid relationId);
 
 
 /* exports for SQL callable functions */
@@ -175,6 +182,9 @@ create_distributed_table(PG_FUNCTION_ARGS)
 							   colocateWithTableName, ShardCount,
 							   ShardReplicationFactor);
 
+	/* copy over data */
+	CopyLocalData(relationId);
+
 	if (ShouldSyncTableMetadata(relationId))
 	{
 		List *commandList = GetDistributedTableDDLEvents(relationId);
@@ -244,6 +254,9 @@ CreateReferenceTable(Oid relationId)
 
 	/* now, create the single shard replicated to all nodes */
 	CreateReferenceTableShard(relationId);
+
+	/* copy over data */
+	CopyLocalData(relationId);
 }
 
 
@@ -306,17 +319,6 @@ ConvertToDistributedTable(Oid relationId, char *distributionColumnName,
 							   relationName),
 						errdetail("Distributed relations must be regular or "
 								  "foreign tables.")));
-	}
-
-	/* check that the relation does not contain any rows */
-	if (!LocalTableEmpty(relationId))
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-						errmsg("cannot distribute relation \"%s\"",
-							   relationName),
-						errdetail("Relation \"%s\" contains data.",
-								  relationName),
-						errhint("Empty your table before distributing it.")));
 	}
 
 	/*
@@ -803,62 +805,6 @@ SupportFunctionForColumn(Var *partitionColumn, Oid accessMethodId,
 
 
 /*
- * LocalTableEmpty function checks whether given local table contains any row and
- * returns false if there is any data. This function is only for local tables and
- * should not be called for distributed tables.
- */
-static bool
-LocalTableEmpty(Oid tableId)
-{
-	Oid schemaId = get_rel_namespace(tableId);
-	char *schemaName = get_namespace_name(schemaId);
-	char *tableName = get_rel_name(tableId);
-	char *tableQualifiedName = quote_qualified_identifier(schemaName, tableName);
-
-	int spiConnectionResult = 0;
-	int spiQueryResult = 0;
-	StringInfo selectExistQueryString = makeStringInfo();
-
-	HeapTuple tuple = NULL;
-	Datum hasDataDatum = 0;
-	bool localTableEmpty = false;
-	bool columnNull = false;
-	bool readOnly = true;
-
-	int rowId = 0;
-	int attributeId = 1;
-
-	AssertArg(!IsDistributedTable(tableId));
-
-	spiConnectionResult = SPI_connect();
-	if (spiConnectionResult != SPI_OK_CONNECT)
-	{
-		ereport(ERROR, (errmsg("could not connect to SPI manager")));
-	}
-
-	appendStringInfo(selectExistQueryString, SELECT_EXIST_QUERY, tableQualifiedName);
-
-	spiQueryResult = SPI_execute(selectExistQueryString->data, readOnly, 0);
-	if (spiQueryResult != SPI_OK_SELECT)
-	{
-		ereport(ERROR, (errmsg("execution was not successful \"%s\"",
-							   selectExistQueryString->data)));
-	}
-
-	/* we expect that SELECT EXISTS query will return single value in a single row */
-	Assert(SPI_processed == 1);
-
-	tuple = SPI_tuptable->vals[rowId];
-	hasDataDatum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, attributeId, &columnNull);
-	localTableEmpty = !DatumGetBool(hasDataDatum);
-
-	SPI_finish();
-
-	return localTableEmpty;
-}
-
-
-/*
  * CreateTruncateTrigger creates a truncate trigger on table identified by relationId
  * and assigns citus_truncate_trigger() as handler.
  */
@@ -988,4 +934,92 @@ ColumnType(Oid relationId, char *columnName)
 	Oid columnType = get_atttype(relationId, columnIndex);
 
 	return columnType;
+}
+
+
+/*
+ * CopyLocalData copies local data into the shards.
+ */
+static void
+CopyLocalData(Oid relationId)
+{
+	DestReceiver *copyDest = NULL;
+	List *columnNameList = NIL;
+	Relation distributedRelation = NULL;
+	TupleDesc tupleDescriptor = NULL;
+	int columnIndex = 0;
+
+	EState *estate = NULL;
+	HeapScanDesc scan = NULL;
+	HeapTuple tuple = NULL;
+	ExprContext *econtext = NULL;
+	MemoryContext oldContext = NULL;
+	TupleTableSlot *slot = NULL;
+	uint64 rowsCopied = 0;
+
+	distributedRelation = heap_open(relationId, ExclusiveLock);
+	tupleDescriptor = RelationGetDescr(distributedRelation);
+	slot = MakeSingleTupleTableSlot(tupleDescriptor);
+
+	for (columnIndex = 0; columnIndex < tupleDescriptor->natts; columnIndex++)
+	{
+		Form_pg_attribute currentColumn = tupleDescriptor->attrs[columnIndex];
+		char *columnName = NameStr(currentColumn->attname);
+
+        if (currentColumn->attisdropped)
+        {   
+            continue;
+        }
+
+		columnNameList = lappend(columnNameList, columnName);
+	}
+
+	estate = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+	econtext->ecxt_scantuple = slot;
+
+	copyDest =
+		(DestReceiver *) CreateCitusCopyDestReceiver(relationId, columnNameList,
+													 estate);
+
+	copyDest->rStartup(copyDest, 0, tupleDescriptor);
+
+	scan = heap_beginscan(distributedRelation, GetActiveSnapshot(), 0, NULL);
+
+	oldContext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+
+	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		ExecStoreTuple(tuple, slot, InvalidBuffer, false);
+
+		copyDest->receiveSlot(slot, copyDest);
+
+		CHECK_FOR_INTERRUPTS();
+
+		ResetPerTupleExprContext(estate);
+
+		if (rowsCopied == 0)
+		{
+			ereport(NOTICE, (errmsg("Copying data from local table...")));
+		}
+
+		rowsCopied++;
+
+		if (rowsCopied % 1000000 == 0)
+		{
+			ereport(NOTICE, (errmsg("Copied %ld rows", rowsCopied)));
+		}
+	}
+
+	if (rowsCopied % 1000000 != 0)
+	{
+		ereport(NOTICE, (errmsg("Copied %ld rows", rowsCopied)));
+	}
+
+	MemoryContextSwitchTo(oldContext);
+	heap_endscan(scan);
+	copyDest->rShutdown(copyDest);
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+	heap_close(distributedRelation, NoLock);
 }
