@@ -72,6 +72,13 @@ typedef struct WalkerState
 	bool badCoalesce;
 } WalkerState;
 
+typedef struct InstantiateQualWalker
+{
+	ShardInterval *targetShardInterval;
+	Var *relationPartitionColumn;
+}InstantiateQualWalker;
+
+
 bool EnableRouterExecution = true;
 
 /* planner functions forward declarations */
@@ -377,6 +384,9 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 	{
 		RelationRestriction *restriction = lfirst(restrictionCell);
 		List *originalBaserestrictInfo = restriction->relOptInfo->baserestrictinfo;
+		InstantiateQualWalker *instantiateQualWalker = palloc0(
+			sizeof(InstantiateQualWalker));
+		Var *relationPartitionKey = PartitionKey(restriction->relationId);
 
 		/*
 		 * We haven't added the quals if all participating tables are reference
@@ -387,9 +397,12 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 			break;
 		}
 
+		instantiateQualWalker->relationPartitionColumn = relationPartitionKey;
+		instantiateQualWalker->targetShardInterval = shardInterval;
+
 		originalBaserestrictInfo =
 			(List *) InstantiatePartitionQual((Node *) originalBaserestrictInfo,
-											  shardInterval);
+											  (void *) instantiateQualWalker);
 	}
 
 	/*
@@ -2950,7 +2963,11 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 static Node *
 InstantiatePartitionQual(Node *node, void *context)
 {
-	ShardInterval *shardInterval = (ShardInterval *) context;
+	ShardInterval *shardInterval =
+		((InstantiateQualWalker *) context)->targetShardInterval;
+	Var *relationPartitionColumn =
+		((InstantiateQualWalker *) context)->relationPartitionColumn;
+
 	Assert(shardInterval->minValueExists);
 	Assert(shardInterval->maxValueExists);
 
@@ -2974,6 +2991,7 @@ InstantiatePartitionQual(Node *node, void *context)
 		Node *leftop = get_leftop((Expr *) op);
 		Node *rightop = get_rightop((Expr *) op);
 		Param *param = NULL;
+		Var *currentPartitionColumn = NULL;
 
 		Var *hashedGEColumn = NULL;
 		OpExpr *hashedGEOpExpr = NULL;
@@ -2992,14 +3010,22 @@ InstantiatePartitionQual(Node *node, void *context)
 		if (IsA(leftop, Param))
 		{
 			param = (Param *) leftop;
+			currentPartitionColumn = (Var *) rightop;
 		}
 		else if (IsA(rightop, Param))
 		{
 			param = (Param *) rightop;
+			currentPartitionColumn = (Var *) leftop;
 		}
 
 		/* not an interesting param for our purpose, so return */
 		if (!(param && param->paramid == UNINSTANTIATED_PARAMETER_ID))
+		{
+			return node;
+		}
+
+		if (relationPartitionColumn &&
+			currentPartitionColumn->varattno != relationPartitionColumn->varattno)
 		{
 			return node;
 		}
