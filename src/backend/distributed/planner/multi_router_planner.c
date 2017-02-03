@@ -49,6 +49,8 @@
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
 #include "optimizer/clauses.h"
+#include "optimizer/paths.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/predtest.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
@@ -95,6 +97,9 @@ static Task * RouterModifyTaskForShardInterval(Query *originalQuery,
 											   RelationRestrictionContext *
 											   restrictionContext,
 											   uint32 taskIdIndex);
+static List * MergeBaseRestrictInfoAndJoinInfo(RelOptInfo *relInfo,
+											   PlannerInfo *plannerInfo,
+											   List *baseRestrictInfo, List *joinInfo);
 static bool MasterIrreducibleExpression(Node *expression, bool *varArgument,
 										bool *badCoalesce);
 static bool MasterIrreducibleExpressionWalker(Node *expression, WalkerState *state);
@@ -389,6 +394,7 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 		InstantiateQualWalker *instantiateQualWalker = palloc0(
 			sizeof(InstantiateQualWalker));
 		Var *relationPartitionKey = PartitionKey(restriction->relationId);
+		List *clauseList = NIL;
 
 		/*
 		 * We haven't added the quals if all participating tables are reference
@@ -402,12 +408,12 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 		instantiateQualWalker->relationPartitionColumn = relationPartitionKey;
 		instantiateQualWalker->targetShardInterval = shardInterval;
 
-		originalBaserestrictInfo =
-			(List *) InstantiatePartitionQual((Node *) originalBaserestrictInfo,
-											  instantiateQualWalker);
-
+		clauseList = MergeBaseRestrictInfoAndJoinInfo(restriction->relOptInfo,
+													  restriction->plannerInfo,
+													  originalBaserestrictInfo,
+													  originalJoinInfo);
 		originalJoinInfo =
-			(List *) InstantiatePartitionQual((Node *) originalJoinInfo,
+			(List *) InstantiatePartitionQual((Node *) clauseList,
 											  instantiateQualWalker);
 	}
 
@@ -503,6 +509,71 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 	modifyTask->replicationModel = cacheEntry->replicationModel;
 
 	return modifyTask;
+}
+
+
+/*
+ *
+ */
+static List *
+MergeBaseRestrictInfoAndJoinInfo(RelOptInfo *relInfo, PlannerInfo *plannerInfo,
+								 List *baseRestrictInfo, List *joinInfo)
+{
+	List *mergedClauseList = baseRestrictInfo;
+	ListCell *joinInfoCell = NULL;
+	Relids otherRelIds;
+
+	/*
+	 * Construct a list of clauses that we can assume true for the purpose of
+	 * proving the index(es) usable.  Restriction clauses for the rel are
+	 * always usable, and so are any join clauses that are "movable to" this
+	 * rel.  Also, we can consider any EC-derivable join clauses (which must
+	 * be "movable to" this rel, by definition).
+	 */
+
+	/* Scan the rel's join clauses */
+	foreach(joinInfoCell, joinInfo)
+	{
+		RestrictInfo *restrictInfo = (RestrictInfo *) lfirst(joinInfoCell);
+
+		/* Check if clause can be moved to this rel */
+		if (!join_clause_is_movable_to(restrictInfo, relInfo))
+		{
+			continue;
+		}
+
+		mergedClauseList = lappend(mergedClauseList, restrictInfo);
+	}
+
+	/*
+	 * Add on any equivalence-derivable join clauses.  Computing the correct
+	 * relid sets for generate_join_implied_equalities is slightly tricky
+	 * because the rel could be a child rel rather than a true baserel, and in
+	 * that case we must remove its parents' relid(s) from all_baserels.
+	 */
+	if (relInfo->reloptkind == RELOPT_OTHER_MEMBER_REL)
+	{
+		otherRelIds = bms_difference(plannerInfo->all_baserels,
+									 find_childrel_parents(plannerInfo, relInfo));
+	}
+	else
+	{
+		otherRelIds = bms_difference(plannerInfo->all_baserels, relInfo->relids);
+	}
+
+	if (!bms_is_empty(otherRelIds))
+	{
+		mergedClauseList =
+			list_concat(mergedClauseList,
+						generate_join_implied_equalities(plannerInfo,
+														 bms_union(relInfo->relids,
+																   otherRelIds),
+														 otherRelIds,
+														 relInfo));
+	}
+
+
+	return mergedClauseList;
 }
 
 
