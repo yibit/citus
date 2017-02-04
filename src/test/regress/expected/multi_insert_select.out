@@ -1660,6 +1660,8 @@ DEBUG:  name: unnamed; blockState:       DEFAULT; state: INPROGR, xid/subid/cid:
 DEBUG:  predicate pruning for shardId 13300001
 DEBUG:  predicate pruning for shardId 13300002
 DEBUG:  predicate pruning for shardId 13300003
+NOTICE:  cannot use shard pruning with ANY/ALL (array expression)
+HINT:  Consider rewriting the expression with OR/AND clauses.
 ERROR:  cannot perform distributed planning for the given modification
 DETAIL:  Select query cannot be pushed down to the worker.
 -- implicit join on non partition column should also not be pushed down

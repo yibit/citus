@@ -66,6 +66,7 @@
 
 #include "catalog/pg_proc.h"
 #include "optimizer/planmain.h"
+#include "nodes/print.h"
 
 
 typedef struct WalkerState
@@ -97,9 +98,8 @@ static Task * RouterModifyTaskForShardInterval(Query *originalQuery,
 											   RelationRestrictionContext *
 											   restrictionContext,
 											   uint32 taskIdIndex);
-static List * MergeBaseRestrictInfoAndJoinInfo(RelOptInfo *relInfo,
-											   PlannerInfo *plannerInfo,
-											   List *baseRestrictInfo, List *joinInfo);
+static List * GetAllActualClausesForRelation(RelOptInfo *relInfo,
+											 PlannerInfo *plannerInfo);
 static bool MasterIrreducibleExpression(Node *expression, bool *varArgument,
 										bool *badCoalesce);
 static bool MasterIrreducibleExpressionWalker(Node *expression, WalkerState *state);
@@ -394,7 +394,6 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 		InstantiateQualWalker *instantiateQualWalker = palloc0(
 			sizeof(InstantiateQualWalker));
 		Var *relationPartitionKey = PartitionKey(restriction->relationId);
-		List *clauseList = NIL;
 
 		/*
 		 * We haven't added the quals if all participating tables are reference
@@ -408,12 +407,11 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 		instantiateQualWalker->relationPartitionColumn = relationPartitionKey;
 		instantiateQualWalker->targetShardInterval = shardInterval;
 
-		clauseList = MergeBaseRestrictInfoAndJoinInfo(restriction->relOptInfo,
-													  restriction->plannerInfo,
-													  originalBaserestrictInfo,
-													  originalJoinInfo);
+		originalBaserestrictInfo =
+			(List *) InstantiatePartitionQual((Node *) originalBaserestrictInfo,
+											  instantiateQualWalker);
 		originalJoinInfo =
-			(List *) InstantiatePartitionQual((Node *) clauseList,
+			(List *) InstantiatePartitionQual((Node *) originalJoinInfo,
 											  instantiateQualWalker);
 	}
 
@@ -513,36 +511,47 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 
 
 /*
+ * GetAllActualClausesForRelation returns all the restrictions that a relation
+ * has including the baserestrictinfo and the necessary joininfo.
  *
+ * This function is heavily inspired by check_index_predicates() from the PostgreSQL's
+ * source file src/backend/optimizer/path/indexpath.c.
  */
 static List *
-MergeBaseRestrictInfoAndJoinInfo(RelOptInfo *relInfo, PlannerInfo *plannerInfo,
-								 List *baseRestrictInfo, List *joinInfo)
+GetAllActualClausesForRelation(RelOptInfo *relInfo, PlannerInfo *plannerInfo)
 {
-	List *mergedClauseList = baseRestrictInfo;
+	List *allRestrictInfos = relInfo->baserestrictinfo;
 	ListCell *joinInfoCell = NULL;
 	Relids otherRelIds;
-
-	/*
-	 * Construct a list of clauses that we can assume true for the purpose of
-	 * proving the index(es) usable.  Restriction clauses for the rel are
-	 * always usable, and so are any join clauses that are "movable to" this
-	 * rel.  Also, we can consider any EC-derivable join clauses (which must
-	 * be "movable to" this rel, by definition).
-	 */
+	List *allActualClauses = NIL;
 
 	/* Scan the rel's join clauses */
-	foreach(joinInfoCell, joinInfo)
+	foreach(joinInfoCell, relInfo->joininfo)
 	{
 		RestrictInfo *restrictInfo = (RestrictInfo *) lfirst(joinInfoCell);
+		List *columnList = pull_var_clause_default((Node *) restrictInfo->clause);
 
-		/* Check if clause can be moved to this rel */
-		if (!join_clause_is_movable_to(restrictInfo, relInfo))
+		/* check if the restrict info already contains a hashed restrict info */
+		if (list_length(columnList) > 0)
 		{
-			continue;
+			Var *firstColumn = linitial(columnList);
+
+			if (equal(firstColumn, MakeInt4Column()))
+			{
+				/*
+				 * This means that we've already instantiated the restrict info
+				 * so this should be included in the final restrict info list.
+				 */
+				allRestrictInfos = lappend(allRestrictInfos, restrictInfo);
+				continue;
+			}
 		}
 
-		mergedClauseList = lappend(mergedClauseList, restrictInfo);
+		/* Check if clause can be moved to this rel */
+		if (join_clause_is_movable_to(restrictInfo, relInfo))
+		{
+			allRestrictInfos = lappend(allRestrictInfos, restrictInfo);
+		}
 	}
 
 	/*
@@ -563,17 +572,18 @@ MergeBaseRestrictInfoAndJoinInfo(RelOptInfo *relInfo, PlannerInfo *plannerInfo,
 
 	if (!bms_is_empty(otherRelIds))
 	{
-		mergedClauseList =
-			list_concat(mergedClauseList,
-						generate_join_implied_equalities(plannerInfo,
+		List *newList = generate_join_implied_equalities(plannerInfo,
 														 bms_union(relInfo->relids,
 																   otherRelIds),
 														 otherRelIds,
-														 relInfo));
+														 relInfo);
+		allRestrictInfos = list_concat(allRestrictInfos, newList);
 	}
 
+	/* finally get the actual clauses from the restrict infos */
+	allActualClauses = get_all_actual_clauses(allRestrictInfos);
 
-	return mergedClauseList;
+	return allActualClauses;
 }
 
 
@@ -2484,8 +2494,6 @@ TargetShardIntervalsForSelect(Query *query,
 		Index tableId = relationRestriction->index;
 		DistTableCacheEntry *cacheEntry = DistributedTableCacheEntry(relationId);
 		int shardCount = cacheEntry->shardIntervalArrayLength;
-		List *baseRestrictionList = relationRestriction->relOptInfo->baserestrictinfo;
-		List *restrictClauseList = get_all_actual_clauses(baseRestrictionList);
 
 		List *prunedShardList = NIL;
 		int shardIndex = 0;
@@ -2494,7 +2502,6 @@ TargetShardIntervalsForSelect(Query *query,
 		bool whereFalseQuery = false;
 
 		relationRestriction->prunedShardIntervalList = NIL;
-		restrictClauseList = list_concat(restrictClauseList, pseudoRestrictionList);
 
 		/*
 		 * Queries may have contradiction clauses like 'false', or '1=0' in
@@ -2506,6 +2513,7 @@ TargetShardIntervalsForSelect(Query *query,
 		if (!whereFalseQuery && shardCount > 0)
 		{
 			List *shardIntervalList = NIL;
+			List *allActualClauses = NIL;
 
 			for (shardIndex = 0; shardIndex < shardCount; shardIndex++)
 			{
@@ -2514,8 +2522,12 @@ TargetShardIntervalsForSelect(Query *query,
 				shardIntervalList = lappend(shardIntervalList, shardInterval);
 			}
 
+			allActualClauses =
+				GetAllActualClausesForRelation(relationRestriction->relOptInfo,
+											   relationRestriction->plannerInfo);
+
 			prunedShardList = PruneShardList(relationId, tableId,
-											 restrictClauseList,
+											 allActualClauses,
 											 shardIntervalList);
 
 			/*
