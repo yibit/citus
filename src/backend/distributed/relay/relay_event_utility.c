@@ -52,6 +52,7 @@ static void SetSchemaNameIfNotExist(char **schemaName, char *newSchemaName);
 static bool UpdateWholeRowColumnReferencesWalker(Node *node, uint64 *shardId);
 
 /* exports for SQL callable functions */
+PG_FUNCTION_INFO_V1(qualified_shard_name);
 PG_FUNCTION_INFO_V1(shard_name);
 
 /*
@@ -654,28 +655,9 @@ AppendShardIdToName(char **name, uint64 shardId)
 Datum
 shard_name(PG_FUNCTION_ARGS)
 {
-	Oid relationId = InvalidOid;
-	int64 shardId = 0;
+	Oid relationId = PG_GETARG_OID(0);
+	int64 shardId = PG_GETARG_INT64(1);
 	char *relationName = NULL;
-
-	/*
-	 * Have to check arguments for NULLness as it can't be declared STRICT
-	 * because of min/max arguments, which have to be NULLable for new shards.
-	 */
-	if (PG_ARGISNULL(0))
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("object_name cannot be null")));
-	}
-	if (PG_ARGISNULL(1))
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("shard_id cannot be null")));
-	}
-
-
-	relationId = PG_GETARG_OID(0);
-	shardId = PG_GETARG_INT64(1);
 
 	if (shardId <= 0)
 	{
@@ -700,4 +682,47 @@ shard_name(PG_FUNCTION_ARGS)
 
 	AppendShardIdToName(&relationName, shardId);
 	PG_RETURN_TEXT_P(cstring_to_text(relationName));
+}
+
+
+/*
+ * qualified_shard_name is a UDF that returns the name of a shard as a
+ * quoted, schema-qualified identifier.
+ */
+Datum
+qualified_shard_name(PG_FUNCTION_ARGS)
+{
+	Oid relationId = PG_GETARG_OID(0);
+	int64 shardId = PG_GETARG_INT64(1);
+	char *relationName = NULL;
+	Oid schemaId = InvalidOid;
+	char *schemaName = NULL;
+	char *qualifiedName = NULL;
+
+	if (shardId <= 0)
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("shard_id cannot be zero or negative value")));
+	}
+
+	if (!OidIsValid(relationId))
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("object_name does not reference a valid relation")));
+	}
+
+	relationName = get_rel_name(relationId);
+	if (relationName == NULL)
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("object_name does not reference a valid relation")));
+	}
+
+	AppendShardIdToName(&relationName, shardId);
+
+	schemaId = get_rel_namespace(relationId);
+	schemaName = get_namespace_name(schemaId);
+	qualifiedName = quote_qualified_identifier(schemaName, relationName);
+
+	PG_RETURN_TEXT_P(cstring_to_text(qualifiedName));
 }
