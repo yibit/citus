@@ -10,6 +10,7 @@ ALTER SEQUENCE pg_catalog.pg_dist_jobid_seq RESTART 270000;
 SHOW server_version \gset
 SELECT substring(:'server_version', '\d+\.\d+') AS major_version;
 
+SET citus.shard_count TO 4;
 
 -- Create tables for subquery tests
 CREATE TABLE lineitem_subquery (
@@ -30,7 +31,7 @@ CREATE TABLE lineitem_subquery (
 	l_shipmode char(10) not null,
 	l_comment varchar(44) not null,
 	PRIMARY KEY(l_orderkey, l_linenumber) );
-SELECT master_create_distributed_table('lineitem_subquery', 'l_orderkey', 'range');
+SELECT create_distributed_table('lineitem_subquery', 'l_orderkey');
 
 CREATE TABLE orders_subquery (
 	o_orderkey bigint not null,
@@ -43,7 +44,7 @@ CREATE TABLE orders_subquery (
 	o_shippriority integer not null,
 	o_comment varchar(79) not null,
 	PRIMARY KEY(o_orderkey) );
-SELECT master_create_distributed_table('orders_subquery', 'o_orderkey', 'range');
+SELECT create_distributed_table('orders_subquery', 'o_orderkey');
 
 SET citus.enable_router_execution TO 'false';
 
@@ -83,25 +84,6 @@ FROM
 
 -- Load data into tables.
 
-SELECT master_create_empty_shard('lineitem_subquery') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = 1, shardmaxvalue = 5986
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('lineitem_subquery') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = 8997, shardmaxvalue = 14947
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('orders_subquery') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = 1, shardmaxvalue = 5986
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('orders_subquery') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = 8997, shardmaxvalue = 14946
-WHERE shardid = :new_shard_id;
 
 SET citus.shard_max_size TO "1MB";
 
@@ -128,8 +110,6 @@ FROM
 		l_orderkey) AS unit_prices;
 
 -- Update metadata in order to make all shards equal.
-
-UPDATE pg_dist_shard SET shardmaxvalue = '14947' WHERE shardid = 270003;
 
 -- If group by is not on partition column then we error out.
 
@@ -334,11 +314,10 @@ CREATE TABLE subquery_pruning_varchar_test_table
    b int
 );
 
-SELECT master_create_distributed_table('subquery_pruning_varchar_test_table', 'a', 'hash');
-SELECT master_create_worker_shards('subquery_pruning_varchar_test_table', 4, 1);
+SELECT create_distributed_table('subquery_pruning_varchar_test_table', 'a');
 
 SET citus.subquery_pushdown TO TRUE;
-SET client_min_messages TO DEBUG2;
+SET client_min_messages TO DEBUG1;
 
 SELECT * FROM 
 	(SELECT count(*) FROM subquery_pruning_varchar_test_table WHERE a = 'onder' GROUP BY a) 
@@ -389,6 +368,62 @@ CREATE TYPE user_composite_type AS
 	user_id BIGINT
 );
 
+CREATE FUNCTION user_composite_type_equal(user_composite_type, user_composite_type) RETURNS boolean
+AS 
+	'select $1.tenant_id = $2.tenant_id AND $1.user_id = $2.user_id;'
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+CREATE OR REPLACE FUNCTION btree_comparison(v1 user_composite_type, v2 user_composite_type) RETURNS integer 
+AS
+$$
+BEGIN
+    IF v1.tenant_id = v2.tenant_id AND v1.user_id = v2.user_id THEN
+    	RETURN 0;
+    END IF;
+
+    IF v1.tenant_id > v2.tenant_id THEN
+    	RETURN 1;
+    END IF;
+    IF v1.tenant_id < v2.tenant_id THEN
+    	RETURN -1;
+    END IF; 
+    RETURN 0;
+END;
+$$
+LANGUAGE 'plpgsql' IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+
+
+CREATE OPERATOR = (
+    LEFTARG = user_composite_type,
+    RIGHTARG = user_composite_type,
+    PROCEDURE = user_composite_type_equal,
+    COMMUTATOR = =,
+    MERGES,
+    HASHES
+);
+
+CREATE FUNCTION user_composite_type_hash(user_composite_type) RETURNS int
+AS
+	 'SELECT hashtext( ($1.tenant_id + $1.user_id)::text);'   
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+CREATE OPERATOR CLASS user_composite_type_btree_op_class
+DEFAULT FOR TYPE user_composite_type USING BTREE AS
+OPERATOR 3 = (user_composite_type, user_composite_type),
+FUNCTION 1 btree_comparison(user_composite_type, user_composite_type);
+
+CREATE OPERATOR CLASS user_composite_type_hash_op_class
+DEFAULT FOR TYPE user_composite_type USING HASH AS
+OPERATOR 1 = (user_composite_type, user_composite_type),
+FUNCTION 1 user_composite_type_hash(user_composite_type);
+
+
 \c - - - :worker_1_port
 
 CREATE TYPE user_composite_type AS
@@ -397,6 +432,63 @@ CREATE TYPE user_composite_type AS
 	user_id BIGINT
 );
 
+
+CREATE FUNCTION user_composite_type_equal(user_composite_type, user_composite_type) RETURNS boolean
+AS 
+	'select $1.tenant_id = $2.tenant_id AND $1.user_id = $2.user_id;'
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+CREATE OR REPLACE FUNCTION btree_comparison(v1 user_composite_type, v2 user_composite_type) RETURNS integer 
+AS
+$$
+BEGIN
+    IF v1.tenant_id = v2.tenant_id AND v1.user_id = v2.user_id THEN
+    	RETURN 0;
+    END IF;
+
+    IF v1.tenant_id > v2.tenant_id THEN
+    	RETURN 1;
+    END IF;
+    IF v1.tenant_id < v2.tenant_id THEN
+    	RETURN -1;
+    END IF; 
+    RETURN 0;
+END;
+$$
+LANGUAGE 'plpgsql' IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+
+
+CREATE OPERATOR = (
+    LEFTARG = user_composite_type,
+    RIGHTARG = user_composite_type,
+    PROCEDURE = user_composite_type_equal,
+    COMMUTATOR = =,
+    MERGES,
+    HASHES
+);
+
+CREATE FUNCTION user_composite_type_hash(user_composite_type) RETURNS int
+AS
+	 'SELECT hashtext( ($1.tenant_id + $1.user_id)::text);'   
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+CREATE OPERATOR CLASS user_composite_type_btree_op_class
+DEFAULT FOR TYPE user_composite_type USING BTREE AS
+OPERATOR 3 = (user_composite_type, user_composite_type),
+FUNCTION 1 btree_comparison(user_composite_type, user_composite_type);
+
+CREATE OPERATOR CLASS user_composite_type_hash_op_class
+DEFAULT FOR TYPE user_composite_type USING HASH AS
+OPERATOR 1 = (user_composite_type, user_composite_type),
+FUNCTION 1 user_composite_type_hash(user_composite_type);
+
+
 \c - - - :worker_2_port
 
 CREATE TYPE user_composite_type AS
@@ -404,6 +496,63 @@ CREATE TYPE user_composite_type AS
 	tenant_id BIGINT,
 	user_id BIGINT
 );
+
+
+CREATE FUNCTION user_composite_type_equal(user_composite_type, user_composite_type) RETURNS boolean
+AS 
+	'select $1.tenant_id = $2.tenant_id AND $1.user_id = $2.user_id;'
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+CREATE OR REPLACE FUNCTION btree_comparison(v1 user_composite_type, v2 user_composite_type) RETURNS integer 
+AS
+$$
+BEGIN
+    IF v1.tenant_id = v2.tenant_id AND v1.user_id = v2.user_id THEN
+    	RETURN 0;
+    END IF;
+
+    IF v1.tenant_id > v2.tenant_id THEN
+    	RETURN 1;
+    END IF;
+    IF v1.tenant_id < v2.tenant_id THEN
+    	RETURN -1;
+    END IF; 
+    RETURN 0;
+END;
+$$
+LANGUAGE 'plpgsql' IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+
+
+CREATE OPERATOR = (
+    LEFTARG = user_composite_type,
+    RIGHTARG = user_composite_type,
+    PROCEDURE = user_composite_type_equal,
+    COMMUTATOR = =,
+    MERGES,
+    HASHES
+);
+
+CREATE FUNCTION user_composite_type_hash(user_composite_type) RETURNS int
+AS
+	 'SELECT hashtext( ($1.tenant_id + $1.user_id)::text);'   
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+
+CREATE OPERATOR CLASS user_composite_type_btree_op_class
+DEFAULT FOR TYPE user_composite_type USING BTREE AS
+OPERATOR 3 = (user_composite_type, user_composite_type),
+FUNCTION 1 btree_comparison(user_composite_type, user_composite_type);
+
+CREATE OPERATOR CLASS user_composite_type_hash_op_class
+DEFAULT FOR TYPE user_composite_type USING HASH AS
+OPERATOR 1 = (user_composite_type, user_composite_type),
+FUNCTION 1 user_composite_type_hash(user_composite_type);
+
 
 \c - - - :master_port
 
@@ -414,27 +563,7 @@ CREATE TABLE events (
 	event_type character varying(255),
 	event_time bigint
 );
-SELECT master_create_distributed_table('events', 'composite_id', 'range');
-
-SELECT master_create_empty_shard('events') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(1,1)', shardmaxvalue = '(1,2000000000)'
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('events') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(1,2000000001)', shardmaxvalue = '(1,4300000000)'
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('events') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(2,1)', shardmaxvalue = '(2,2000000000)'
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('events') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(2,2000000001)', shardmaxvalue = '(2,4300000000)'
-WHERE shardid = :new_shard_id;
+SELECT create_distributed_table('events', 'composite_id');
 
 \COPY events FROM STDIN WITH CSV
 "(1,1001)",20001,click,1472807012
@@ -454,27 +583,7 @@ CREATE TABLE users (
 	composite_id user_composite_type,
 	lastseen bigint
 );
-SELECT master_create_distributed_table('users', 'composite_id', 'range');
-
-SELECT master_create_empty_shard('users') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(1,1)', shardmaxvalue = '(1,2000000000)'
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('users') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(1,2000000001)', shardmaxvalue = '(1,4300000000)'
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('users') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(2,1)', shardmaxvalue = '(2,2000000000)'
-WHERE shardid = :new_shard_id;
-
-SELECT master_create_empty_shard('users') AS new_shard_id
-\gset
-UPDATE pg_dist_shard SET shardminvalue = '(2,2000000001)', shardmaxvalue = '(2,4300000000)'
-WHERE shardid = :new_shard_id;
+SELECT create_distributed_table('users', 'composite_id');
 
 \COPY users FROM STDIN WITH CSV
 "(1,1001)",1472807115
@@ -503,8 +612,7 @@ FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			users.composite_id = events.composite_id AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type IN ('click', 'submit', 'pay')) AS subquery
@@ -528,13 +636,13 @@ FROM
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>1'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			users.composite_id = events.composite_id AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'click')
@@ -543,20 +651,20 @@ FROM
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>2'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			users.composite_id = events.composite_id AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'submit')
 	) AS subquery_1
 	LEFT JOIN
 	(SELECT
-		DISTINCT ON ((composite_id).tenant_id, (composite_id).user_id) composite_id,
+		composite_id,
 		(composite_id).tenant_id,
 		(composite_id).user_id,
 		'Has done paying'::TEXT AS hasdone
@@ -567,8 +675,7 @@ FROM
 		events.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 		event_type = 'pay') AS subquery_2
 	ON
-		subquery_1.tenant_id = subquery_2.tenant_id AND
-		subquery_1.user_id = subquery_2.user_id
+		subquery_1.composite_id = subquery_2.composite_id
 	GROUP BY
 		subquery_1.tenant_id,
 		subquery_1.user_id,

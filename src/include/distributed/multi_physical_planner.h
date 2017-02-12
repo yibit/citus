@@ -244,7 +244,8 @@ typedef struct OperatorCacheEntry
 extern int TaskAssignmentPolicy;
 
 /* Function declarations for building physical plans and constructing queries */
-extern MultiPlan * MultiPhysicalPlanCreate(MultiTreeRoot *multiTree);
+extern MultiPlan * MultiPhysicalPlanCreate(MultiTreeRoot *multiTree, Query *originalQuery,
+										   RelationRestrictionContext *restrictionContext);
 extern StringInfo ShardFetchQueryString(uint64 shardId);
 extern Task * CreateBasicTask(uint64 jobId, uint32 taskId, TaskType taskType,
 							  char *queryString);

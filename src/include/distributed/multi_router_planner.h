@@ -33,7 +33,16 @@ extern MultiPlan * CreateRouterPlan(Query *originalQuery, Query *query,
 									RelationRestrictionContext *restrictionContext);
 extern MultiPlan * CreateModifyPlan(Query *originalQuery, Query *query,
 									RelationRestrictionContext *restrictionContext);
-
+extern Task * RouterSelectTask(Query *originalQuery,
+							   RelationRestrictionContext *restrictionContext,
+							   List **placementList);
+extern bool RouterSelectQuery(Query *originalQuery,
+							  RelationRestrictionContext *restrictionContext,
+							  List **placementList, uint64 *anchorShardId,
+							  List **relationShardList, bool replacePrunedQueryWithDummy);
+extern RelationRestrictionContext * CopyRelationRestrictionContext(
+	RelationRestrictionContext *oldContext);
+extern Node * InstantiatePartitionQual(Node *node, void *context);
 extern void AddUninstantiatedPartitionRestriction(Query *originalQuery);
 extern DeferredErrorMessage * ModifyQuerySupported(Query *queryTree);
 extern Query * ReorderInsertSelectTargetLists(Query *originalQuery,

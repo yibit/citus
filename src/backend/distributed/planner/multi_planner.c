@@ -51,7 +51,8 @@ static RelationRestrictionContext * CurrentRestrictionContext(void);
 static void PopRestrictionContext(void);
 static bool HasUnresolvedExternParamsWalker(Node *expression, ParamListInfo boundParams);
 
-
+#include "utils/elog.h"
+#include "nodes/print.h"
 /* Distributed planner hook */
 PlannedStmt *
 multi_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
@@ -69,6 +70,7 @@ multi_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	{
 		originalQuery = copyObject(parse);
 
+
 		/*
 		 * We implement INSERT INTO .. SELECT by pushing down the SELECT to
 		 * each shard. To compute that we use the router planner, by adding
@@ -85,7 +87,7 @@ multi_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		 * to a single shard, or if the pruned shards aren't colocated,
 		 * we error out.
 		 */
-		if (InsertSelectQuery(parse))
+		if (InsertSelectQuery(parse) || SubqueryEntryList(parse) != NIL)
 		{
 			AddUninstantiatedPartitionRestriction(parse);
 		}
@@ -108,6 +110,10 @@ multi_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 			result = CreateDistributedPlan(result, originalQuery, parse,
 										   boundParams, restrictionContext);
 		}
+
+
+
+
 	}
 	PG_CATCH();
 	{
@@ -214,7 +220,7 @@ CreateDistributedPlan(PlannedStmt *localPlan, Query *originalQuery, Query *query
 		if ((!distributedPlan || distributedPlan->planningError) && !hasUnresolvedParams)
 		{
 			/* Create and optimize logical plan */
-			MultiTreeRoot *logicalPlan = MultiLogicalPlanCreate(query);
+			MultiTreeRoot *logicalPlan = MultiLogicalPlanCreate(originalQuery, query, restrictionContext);
 			MultiLogicalPlanOptimize(logicalPlan);
 
 			/*
@@ -227,7 +233,7 @@ CreateDistributedPlan(PlannedStmt *localPlan, Query *originalQuery, Query *query
 			CheckNodeIsDumpable((Node *) logicalPlan);
 
 			/* Create the physical plan */
-			distributedPlan = MultiPhysicalPlanCreate(logicalPlan);
+			distributedPlan = MultiPhysicalPlanCreate(logicalPlan,originalQuery, restrictionContext);
 
 			/* distributed plan currently should always succeed or error out */
 			Assert(distributedPlan && distributedPlan->planningError == NULL);

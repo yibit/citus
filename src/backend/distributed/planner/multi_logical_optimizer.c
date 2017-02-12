@@ -2834,9 +2834,9 @@ ErrorIfContainsUnsupportedSubquery(MultiNode *logicalPlanNode)
 		outerQueryHasLimit = true;
 	}
 
-	ErrorIfCannotPushdownSubquery(subquery, outerQueryHasLimit);
-	ErrorIfUnsupportedShardDistribution(subquery);
-	ErrorIfUnsupportedFilters(subquery);
+	//ErrorIfCannotPushdownSubquery(subquery, outerQueryHasLimit);
+	//ErrorIfUnsupportedShardDistribution(subquery);
+	//ErrorIfUnsupportedFilters(subquery);
 }
 
 

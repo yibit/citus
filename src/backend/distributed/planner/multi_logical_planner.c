@@ -22,6 +22,7 @@
 #include "distributed/metadata_cache.h"
 #include "distributed/multi_logical_optimizer.h"
 #include "distributed/multi_logical_planner.h"
+#include "distributed/multi_planner.h"
 #include "distributed/multi_physical_planner.h"
 #include "distributed/worker_protocol.h"
 #include "nodes/makefuncs.h"
@@ -105,7 +106,8 @@ static MultiNode * ApplyCartesianProduct(MultiNode *leftNode, MultiNode *rightNo
  * functions will be removed with upcoming subqery changes.
  */
 static MultiNode * SubqueryPushdownMultiPlanTree(Query *queryTree,
-												 List *subqueryEntryList);
+												 List *subqueryEntryList,
+												 RelationRestrictionContext *restrictionContext);
 static void ErrorIfSubqueryJoin(Query *queryTree);
 static MultiTable * MultiSubqueryPushdownTable(RangeTblEntry *subqueryRangeTableEntry);
 
@@ -115,17 +117,21 @@ static MultiTable * MultiSubqueryPushdownTable(RangeTblEntry *subqueryRangeTable
  * create logical plan and adds a root node to top of it.
  */
 MultiTreeRoot *
-MultiLogicalPlanCreate(Query *queryTree)
+MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
+					   RelationRestrictionContext *restrictionContext)
 {
 	MultiNode *multiQueryNode = NULL;
 	MultiTreeRoot *rootNode = NULL;
 
-	List *subqueryEntryList = SubqueryEntryList(queryTree);
+	List *subqueryEntryList = SubqueryEntryList(originalQuery);
 	if (subqueryEntryList != NIL)
 	{
 		if (SubqueryPushdown)
 		{
-			multiQueryNode = SubqueryPushdownMultiPlanTree(queryTree, subqueryEntryList);
+
+
+			multiQueryNode = SubqueryPushdownMultiPlanTree(originalQuery, subqueryEntryList,
+															restrictionContext);
 		}
 		else
 		{
@@ -255,7 +261,7 @@ MultiPlanTree(Query *queryTree)
 		ErrorIfSubqueryNotSupported(subqueryTree);
 
 		/* check if subquery has joining tables */
-		ErrorIfSubqueryJoin(subqueryTree);
+		//ErrorIfSubqueryJoin(subqueryTree);
 
 		subqueryNode = CitusMakeNode(MultiTable);
 		subqueryNode->relationId = SUBQUERY_RELATION_ID;
@@ -271,7 +277,7 @@ MultiPlanTree(Query *queryTree)
 		 * reason, here we are updating columns in the most outer query for where
 		 * clause list and target list accordingly.
 		 */
-		Assert(list_length(subqueryEntryList) == 1);
+		//Assert(list_length(subqueryEntryList) == 1);
 
 		whereClauseColumnList = pull_var_clause_default((Node *) whereClauseList);
 		targetListColumnList = pull_var_clause_default((Node *) targetEntryList);
@@ -840,7 +846,7 @@ QualifierList(FromExpr *fromExpr)
 	return qualifierList;
 }
 
-
+#include "nodes/print.h"
 /*
  * ValidateClauseList walks over the given list of clauses, and checks that we
  * can recognize all the clauses. This function ensures that we do not drop an
@@ -861,7 +867,7 @@ ValidateClauseList(List *clauseList)
 		if (!(selectClause || joinClause || orClause))
 		{
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg("unsupported clause type")));
+							errmsg("unsupported clause type: %s", pretty_format_node_dump(nodeToString(clause)))));
 		}
 	}
 }
@@ -1982,7 +1988,8 @@ ApplyCartesianProduct(MultiNode *leftNode, MultiNode *rightNode,
  * from other parts of code although it causes some code duplication.
  */
 static MultiNode *
-SubqueryPushdownMultiPlanTree(Query *queryTree, List *subqueryEntryList)
+SubqueryPushdownMultiPlanTree(Query *queryTree, List *subqueryEntryList,
+							  RelationRestrictionContext *restrictionContext)
 {
 	List *targetEntryList = queryTree->targetList;
 	List *qualifierList = NIL;
@@ -2013,7 +2020,7 @@ SubqueryPushdownMultiPlanTree(Query *queryTree, List *subqueryEntryList)
 	 * here we are updating columns in the most outer query for where clause
 	 * list and target list accordingly.
 	 */
-	Assert(list_length(subqueryEntryList) == 1);
+	//Assert(list_length(subqueryEntryList) == 1);
 
 	qualifierColumnList = pull_var_clause_default((Node *) qualifierList);
 	targetListColumnList = pull_var_clause_default((Node *) targetEntryList);
@@ -2078,7 +2085,7 @@ ErrorIfSubqueryJoin(Query *queryTree)
 
 	if (joiningRangeTableCount > 1)
 	{
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+		ereport(INFO, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("cannot perform distributed planning on this query"),
 						errdetail("Join in subqueries is not supported yet")));
 	}

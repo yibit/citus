@@ -93,11 +93,10 @@ static MultiPlan * CreateSingleTaskRouterPlan(Query *originalQuery,
 static MultiPlan * CreateInsertSelectRouterPlan(Query *originalQuery,
 												RelationRestrictionContext *
 												restrictionContext);
-static Task * RouterModifyTaskForShardInterval(Query *originalQuery,
-											   ShardInterval *shardInterval,
-											   RelationRestrictionContext *
-											   restrictionContext,
-											   uint32 taskIdIndex);
+static Task *
+RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInterval,
+								 RelationRestrictionContext *restrictionContext,
+								 uint32 taskIdIndex);
 static List * GetAllActualClausesForRelation(RelOptInfo *relInfo,
 											 PlannerInfo *plannerInfo);
 static bool MasterIrreducibleExpression(Node *expression, bool *varArgument,
@@ -111,13 +110,6 @@ static ShardInterval * TargetShardIntervalForModify(Query *query);
 static List * QueryRestrictList(Query *query);
 static bool FastShardPruningPossible(CmdType commandType, char partitionMethod);
 static Const * ExtractInsertPartitionValue(Query *query, Var *partitionColumn);
-static Task * RouterSelectTask(Query *originalQuery,
-							   RelationRestrictionContext *restrictionContext,
-							   List **placementList);
-static bool RouterSelectQuery(Query *originalQuery,
-							  RelationRestrictionContext *restrictionContext,
-							  List **placementList, uint64 *anchorShardId,
-							  List **relationShardList, bool replacePrunedQueryWithDummy);
 static bool RelationPrunesToMultipleShards(List *relationShardList);
 static List * TargetShardIntervalsForSelect(Query *query,
 											RelationRestrictionContext *restrictionContext);
@@ -126,9 +118,6 @@ static List * IntersectPlacementList(List *lhsPlacementList, List *rhsPlacementL
 static Job * RouterQueryJob(Query *query, Task *task, List *placementList);
 static bool MultiRouterPlannableQuery(Query *query,
 									  RelationRestrictionContext *restrictionContext);
-static RelationRestrictionContext * CopyRelationRestrictionContext(
-	RelationRestrictionContext *oldContext);
-static Node * InstantiatePartitionQual(Node *node, void *context);
 static DeferredErrorMessage * InsertSelectQuerySupported(Query *queryTree,
 														 RangeTblEntry *insertRte,
 														 RangeTblEntry *subqueryRte,
@@ -361,6 +350,7 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 	uint64 shardId = shardInterval->shardId;
 	Oid distributedTableId = shardInterval->relationId;
 	DistTableCacheEntry *cacheEntry = DistributedTableCacheEntry(distributedTableId);
+
 
 	RelationRestrictionContext *copiedRestrictionContext =
 		CopyRelationRestrictionContext(restrictionContext);
@@ -1156,7 +1146,7 @@ InsertPartitionColumnMatchesSelect(Query *query, RangeTblEntry *insertRte,
 
 	return NULL;
 }
-
+#include "distributed/multi_planner.h"
 
 /*
  * AddUninstantiatedPartitionRestriction() can only be used with
@@ -1182,10 +1172,17 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 	Var *targetPartitionColumnVar = NULL;
 	List *targetList = NULL;
 
-	Assert(InsertSelectQuery(originalQuery));
+	//Assert(InsertSelectQuery(originalQuery));
 
-	subqueryEntry = ExtractSelectRangeTableEntry(originalQuery);
-	subquery = subqueryEntry->subquery;
+	if (originalQuery->commandType == CMD_INSERT)
+	{
+		subqueryEntry = ExtractSelectRangeTableEntry(originalQuery);
+		subquery = subqueryEntry->subquery;
+	}
+	else
+	{
+		subquery = originalQuery;
+	}
 
 	/*
 	 * We currently not support the subquery with set operations. The main reason is that
@@ -1196,8 +1193,52 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 	 */
 	if (subquery->setOperations != NULL)
 	{
+		//elog(INFO, "used to return for subqueries");
 		return;
 	}
+//goto label;
+	List *queryList = NIL;
+	ListCell *queryCell = NULL;
+bool added = false;
+	ExtractQueryWalker((Node *) subquery, &queryList);
+	foreach(queryCell, queryList)
+	{
+		Query *query = (Query *) lfirst(queryCell);
+		bool leafQuery = LeafQuery(query);
+		if (leafQuery)
+		{
+			List *rangeTableList = query->rtable;
+			ListCell *rteCell = NULL;
+			int rteIndex = 1;
+
+			foreach(rteCell, rangeTableList)
+			{
+				RangeTblEntry *rte = (RangeTblEntry *) lfirst(rteCell);
+
+				if (rte->rtekind != RTE_RELATION)
+				{
+					continue;
+				}
+				if (PartitionMethod(rte->relid) != DISTRIBUTE_BY_NONE)
+				{
+
+
+					//elog(INFO, "adding qual to relation %s with RTE index %d", get_rel_name(rte->relid), rteIndex);
+					targetPartitionColumnVar = PartitionColumn(rte->relid, rteIndex);
+					AddUninstantiatedEqualityQual(query, targetPartitionColumnVar);
+
+					added = true;
+					return;
+				}
+				rteIndex++;
+
+			}
+		}
+	}
+
+	if (added)
+		return;
+//label:
 
 	/* iterate through the target list and find the partition column on the target list */
 	targetList = subquery->targetList;
@@ -1209,6 +1250,7 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 			IsA(targetEntry->expr, Var))
 		{
 			targetPartitionColumnVar = (Var *) targetEntry->expr;
+			//elog(INFO, "found target entry");
 			break;
 		}
 	}
@@ -1222,7 +1264,6 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 		return;
 	}
 
-	/* finally add the equality qual of target column to subquery */
 	AddUninstantiatedEqualityQual(subquery, targetPartitionColumnVar);
 }
 
@@ -1271,6 +1312,7 @@ AddUninstantiatedEqualityQual(Query *query, Var *partitionColumn)
 	uninstantiatedEqualityQual->opfuncid = get_opcode(uninstantiatedEqualityQual->opno);
 	uninstantiatedEqualityQual->opresulttype =
 		get_func_rettype(uninstantiatedEqualityQual->opfuncid);
+//elog(INFO, "AddUninstantiatedEqualityQual: is called: %s", pretty_format_node_dump(nodeToString(uninstantiatedEqualityQual)));
 
 	/* add restriction on partition column */
 	if (query->jointree->quals == NULL)
@@ -2297,7 +2339,7 @@ ExtractInsertPartitionValue(Query *query, Var *partitionColumn)
 
 
 /* RouterSelectTask builds a Task to represent a single shard select query */
-static Task *
+Task *
 RouterSelectTask(Query *originalQuery, RelationRestrictionContext *restrictionContext,
 				 List **placementList)
 {
@@ -2350,7 +2392,7 @@ RouterSelectTask(Query *originalQuery, RelationRestrictionContext *restrictionCo
  * relationShardList is filled with the list of relation-to-shard mappings for
  * the query.
  */
-static bool
+bool
 RouterSelectQuery(Query *originalQuery, RelationRestrictionContext *restrictionContext,
 				  List **placementList, uint64 *anchorShardId, List **relationShardList,
 				  bool replacePrunedQueryWithDummy)
@@ -2367,6 +2409,7 @@ RouterSelectQuery(Query *originalQuery, RelationRestrictionContext *restrictionC
 
 	if (prunedRelationShardList == NULL)
 	{
+		//elog(INFO, "no shards case");
 		return false;
 	}
 
@@ -2412,6 +2455,8 @@ RouterSelectQuery(Query *originalQuery, RelationRestrictionContext *restrictionC
 	 */
 	if (RelationPrunesToMultipleShards(*relationShardList))
 	{
+
+		//elog(INFO, "RelationPrunesToMultipleShards shards case");
 		return false;
 	}
 
@@ -2466,7 +2511,7 @@ RouterSelectQuery(Query *originalQuery, RelationRestrictionContext *restrictionC
 	return true;
 }
 
-
+#include "nodes/print.h"
 /*
  * TargetShardIntervalsForSelect performs shard pruning for all referenced relations
  * in the query and returns list of shards per relation. Shard pruning is done based
@@ -2525,7 +2570,7 @@ TargetShardIntervalsForSelect(Query *query,
 			allActualClauses =
 				GetAllActualClausesForRelation(relationRestriction->relOptInfo,
 											   relationRestriction->plannerInfo);
-
+//elog(DEBUG1, "allActualClauses: for relation:%s -  %s", get_rel_name(relationId), pretty_format_node_dump(nodeToString(allActualClauses)));
 			prunedShardList = PruneShardList(relationId, tableId,
 											 allActualClauses,
 											 shardIntervalList);
@@ -2538,8 +2583,11 @@ TargetShardIntervalsForSelect(Query *query,
 			 */
 			if (list_length(prunedShardList) > 1)
 			{
+				elog(INFO, "many shards case:%d for %s", list_length(prunedShardList), get_rel_name(relationId));
 				return NULL;
 			}
+			elog(INFO, "Its OK for %s", get_rel_name(relationId));
+
 		}
 
 		relationRestriction->prunedShardIntervalList = prunedShardList;
@@ -2994,7 +3042,7 @@ InsertSelectQuery(Query *query)
  * plannerInfo which is read-only. All other parts of the relOptInfo is also shallowly
  * copied.
  */
-static RelationRestrictionContext *
+RelationRestrictionContext *
 CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 {
 	RelationRestrictionContext *newContext = (RelationRestrictionContext *)
@@ -3031,8 +3079,7 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 
 		/* not copyable, but readonly */
 		newRestriction->plannerInfo = oldRestriction->plannerInfo;
-		newRestriction->prunedShardIntervalList =
-			copyObject(oldRestriction->prunedShardIntervalList);
+		newRestriction->prunedShardIntervalList = NIL;
 
 		newContext->relationRestrictionList =
 			lappend(newContext->relationRestrictionList, newRestriction);
@@ -3050,7 +3097,7 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
  * Once we see ($1 = partition column), we replace it with
  * (partCol >= shardMinValue && partCol <= shardMaxValue).
  */
-static Node *
+Node *
 InstantiatePartitionQual(Node *node, void *context)
 {
 	InstantiateQualWalker *instantiateContext = ((InstantiateQualWalker *) context);
@@ -3116,12 +3163,14 @@ InstantiatePartitionQual(Node *node, void *context)
 			}
 		}
 
+//elog(INFO, "InstantiatePartitionQual for relation %s got to op case: %s", get_rel_name(shardInterval->relationId), pretty_format_node_dump(nodeToString(node)));
 
 		/* not an interesting param for our purpose, so return */
 		if (!(param && param->paramid == UNINSTANTIATED_PARAMETER_ID))
 		{
 			return node;
 		}
+		//elog(INFO, "InstantiatePartitionQual for relation %s got param case", get_rel_name(shardInterval->relationId));
 
 		/* if the qual is not on the partition column, do not instantiate */
 		if (relationPartitionColumn && currentColumn &&
@@ -3129,6 +3178,7 @@ InstantiatePartitionQual(Node *node, void *context)
 		{
 			return node;
 		}
+		//elog(INFO, "InstantiatePartitionQual for relation %s got adding case", get_rel_name(shardInterval->relationId));
 
 		/* get the integer >=, <= operators from the catalog */
 		integer4GEoperatorId = get_opfamily_member(INTEGER_BTREE_FAM_OID, INT4OID,
@@ -3167,7 +3217,7 @@ InstantiatePartitionQual(Node *node, void *context)
 		/* finally add the hashed operators to a list and return it */
 		hashedOperatorList = lappend(hashedOperatorList, hashedGEOpExpr);
 		hashedOperatorList = lappend(hashedOperatorList, hashedLEOpExpr);
-
+//elog(INFO, "added hashed one for relation: %s", get_rel_name(shardInterval->relationId));
 		return (Node *) hashedOperatorList;
 	}
 
