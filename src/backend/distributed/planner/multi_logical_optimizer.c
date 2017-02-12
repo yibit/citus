@@ -4147,13 +4147,19 @@ LeafQuery(Query *queryTree)
 	List *rangeTableList = queryTree->rtable;
 	List *joinTreeTableIndexList = NIL;
 	ListCell *joinTreeTableIndexCell = NULL;
-	bool leafQuery = true;
+	bool leafQuery = false;
 
 	/*
 	 * Extract all range table indexes from the join tree. Note that sub-queries
 	 * that get pulled up by PostgreSQL don't appear in this join tree.
 	 */
 	ExtractRangeTableIndexWalker((Node *) queryTree->jointree, &joinTreeTableIndexList);
+
+	if (list_length(joinTreeTableIndexList) > 0)
+	{
+		leafQuery = true;
+	}
+
 	foreach(joinTreeTableIndexCell, joinTreeTableIndexList)
 	{
 		/*
@@ -4166,13 +4172,9 @@ LeafQuery(Query *queryTree)
 		RangeTblEntry *rangeTableEntry =
 			(RangeTblEntry *) list_nth(rangeTableList, rangeTableListIndex);
 
-		/*
-		 * Check if the range table in the join tree is a simple relation.
-		 */
-		if (rangeTableEntry->rtekind != RTE_RELATION)
-		{
-			leafQuery = false;
-		}
+		bool rteIsLeaf = (rangeTableEntry->rtekind == RTE_RELATION);
+
+		leafQuery = leafQuery && rteIsLeaf;
 	}
 
 	return leafQuery;

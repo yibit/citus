@@ -1079,9 +1079,9 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 {
 	Query *subquery = NULL;
 	RangeTblEntry *subqueryEntry = NULL;
-	ListCell *targetEntryCell = NULL;
 	Var *targetPartitionColumnVar = NULL;
-	List *targetList = NULL;
+	List *queryList = NIL;
+	ListCell *queryCell = NULL;
 
 	Assert(InsertSelectQuery(originalQuery));
 
@@ -1100,31 +1100,52 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 		return;
 	}
 
-	/* iterate through the target list and find the partition column on the target list */
-	targetList = subquery->targetList;
-	foreach(targetEntryCell, targetList)
+	ExtractQueryWalker((Node *) subquery, &queryList);
+	foreach(queryCell, queryList)
 	{
-		TargetEntry *targetEntry = lfirst(targetEntryCell);
+		Query *query = (Query *) lfirst(queryCell);
+		List *rangeTableList = NIL;
+		int rteIndex = 1;
+		List *joinTreeTableIndexList = NIL;
+		ListCell *joinTreeTableIndexCell = NULL;
 
-		if (IsPartitionColumn(targetEntry->expr, subquery) &&
-			IsA(targetEntry->expr, Var))
+		/* we only process leaf queries */
+		if (!LeafQuery(query))
 		{
-			targetPartitionColumnVar = (Var *) targetEntry->expr;
-			break;
+			continue;
+		}
+
+		rangeTableList = query->rtable;
+		ExtractRangeTableIndexWalker((Node *) query->jointree, &joinTreeTableIndexList);
+
+		foreach(joinTreeTableIndexCell, joinTreeTableIndexList)
+		{
+			/*
+			 * Join tree's range table index starts from 1 in the query tree. But,
+			 * list indexes start from 0.
+			 */
+			int joinTreeTableIndex = lfirst_int(joinTreeTableIndexCell);
+			int rangeTableListIndex = joinTreeTableIndex - 1;
+
+			RangeTblEntry *rangeTableEntry =
+				(RangeTblEntry *) list_nth(rangeTableList, rangeTableListIndex);
+
+			/* since the query is a leaf query, all RTEs should be relations */
+			Assert(rangeTableEntry->rtekind == RTE_RELATION);
+
+			/* find a co-located table and add the qual */
+			if (PartitionMethod(rangeTableEntry->relid) != DISTRIBUTE_BY_NONE)
+			{
+				targetPartitionColumnVar = PartitionColumn(rangeTableEntry->relid,
+														   rteIndex);
+				AddUninstantiatedEqualityQual(query, targetPartitionColumnVar);
+
+				return;
+			}
+
+			++rteIndex;
 		}
 	}
-
-	/*
-	 * If we cannot find the bare partition column, no need to add the qual since
-	 * we're already going to error out on the multi planner.
-	 */
-	if (!targetPartitionColumnVar)
-	{
-		return;
-	}
-
-	/* finally add the equality qual of target column to subquery */
-	AddUninstantiatedEqualityQual(subquery, targetPartitionColumnVar);
 }
 
 

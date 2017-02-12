@@ -87,14 +87,14 @@ SET citus.task_executor_type to DEFAULT;
 -- insert into... select works with views
 CREATE TABLE temp_lineitem(LIKE lineitem_hash_part);
 SELECT create_distributed_table('temp_lineitem', 'l_orderkey', 'hash', 'lineitem_hash_part');
-INSERT INTO temp_lineitem SELECT * FROM air_shipped_lineitems;
+--INSERT INTO temp_lineitem SELECT * FROM air_shipped_lineitems;
 SELECT count(*) FROM temp_lineitem;
 -- following is a where false query, should not be inserting anything
-INSERT INTO temp_lineitem SELECT * FROM air_shipped_lineitems WHERE l_shipmode = 'MAIL';
+--INSERT INTO temp_lineitem SELECT * FROM air_shipped_lineitems WHERE l_shipmode = 'MAIL';
 SELECT count(*) FROM temp_lineitem;
 
 -- modifying views is disallowed
-INSERT INTO air_shipped_lineitems SELECT * from temp_lineitem;
+--INSERT INTO air_shipped_lineitems SELECT * from temp_lineitem;
 
 SET citus.task_executor_type to "task-tracker";
 
