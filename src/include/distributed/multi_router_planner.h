@@ -46,6 +46,13 @@ extern RangeTblEntry * ExtractInsertRangeTableEntry(Query *query);
 extern void AddShardIntervalRestrictionToSelect(Query *subqery,
 												ShardInterval *shardInterval);
 extern ShardInterval * FastShardPruning(Oid distributedTableId, Datum partitionValue);
+extern Node * InstantiatePartitionQual(Node *node, void *context);
+extern RelationRestrictionContext * CopyRelationRestrictionContext(
+	RelationRestrictionContext *oldContext);
+extern bool RouterSelectQuery(Query *originalQuery,
+							  RelationRestrictionContext *restrictionContext,
+							  List **placementList, uint64 *anchorShardId,
+							  List **relationShardList, bool replacePrunedQueryWithDummy);
 
 
 #endif /* MULTI_ROUTER_PLANNER_H */

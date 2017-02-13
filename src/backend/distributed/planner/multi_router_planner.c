@@ -48,6 +48,8 @@
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
 #include "optimizer/clauses.h"
+#include "optimizer/paths.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/predtest.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
@@ -101,10 +103,8 @@ static Const * ExtractInsertPartitionValue(Query *query, Var *partitionColumn);
 static Task * RouterSelectTask(Query *originalQuery,
 							   RelationRestrictionContext *restrictionContext,
 							   List **placementList);
-static bool RouterSelectQuery(Query *originalQuery,
-							  RelationRestrictionContext *restrictionContext,
-							  List **placementList, uint64 *anchorShardId,
-							  List **relationShardList, bool replacePrunedQueryWithDummy);
+static List * GetAllActualClausesForRelation(RelOptInfo *relInfo,
+											 PlannerInfo *plannerInfo);
 static bool RelationPrunesToMultipleShards(List *relationShardList);
 static List * TargetShardIntervalsForSelect(Query *query,
 											RelationRestrictionContext *restrictionContext);
@@ -113,9 +113,6 @@ static List * IntersectPlacementList(List *lhsPlacementList, List *rhsPlacementL
 static Job * RouterQueryJob(Query *query, Task *task, List *placementList);
 static bool MultiRouterPlannableQuery(Query *query,
 									  RelationRestrictionContext *restrictionContext);
-static RelationRestrictionContext * CopyRelationRestrictionContext(
-	RelationRestrictionContext *oldContext);
-static Node * InstantiatePartitionQual(Node *node, void *context);
 static DeferredErrorMessage * InsertSelectQuerySupported(Query *queryTree,
 														 RangeTblEntry *insertRte,
 														 RangeTblEntry *subqueryRte,
@@ -1083,10 +1080,15 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 	List *queryList = NIL;
 	ListCell *queryCell = NULL;
 
-	Assert(InsertSelectQuery(originalQuery));
-
-	subqueryEntry = ExtractSelectRangeTableEntry(originalQuery);
-	subquery = subqueryEntry->subquery;
+	if (originalQuery->commandType == CMD_INSERT)
+	{
+		subqueryEntry = ExtractSelectRangeTableEntry(originalQuery);
+		subquery = subqueryEntry->subquery;
+	}
+	else
+	{
+		subquery = originalQuery;
+	}
 
 	/*
 	 * We currently not support the subquery with set operations. The main reason is that
@@ -1105,13 +1107,47 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 	{
 		Query *query = (Query *) lfirst(queryCell);
 		List *rangeTableList = NIL;
-		int rteIndex = 1;
 		List *joinTreeTableIndexList = NIL;
 		ListCell *joinTreeTableIndexCell = NULL;
 
 		/* we only process leaf queries */
 		if (!LeafQuery(query))
 		{
+			if (query->setOperations != NULL)
+			{
+				List *rangeTableList = query->rtable;
+				SetOperationStmt *unionStatement =
+					(SetOperationStmt *) query->setOperations;
+				Query *leftQuery = NULL;
+				Query *rightQuery = NULL;
+
+				RangeTblRef *leftRangeTableReference =
+					(RangeTblRef *) unionStatement->larg;
+				RangeTblRef *rightRangeTableReference =
+					(RangeTblRef *) unionStatement->rarg;
+
+				int leftTableIndex = leftRangeTableReference->rtindex - 1;
+				int rightTableIndex = rightRangeTableReference->rtindex - 1;
+
+				RangeTblEntry *leftRangeTableEntry = (RangeTblEntry *) list_nth(
+					rangeTableList,
+					leftTableIndex);
+				RangeTblEntry *rightRangeTableEntry = (RangeTblEntry *) list_nth(
+					rangeTableList,
+					rightTableIndex);
+
+				Assert(leftRangeTableEntry->rtekind == RTE_SUBQUERY);
+				Assert(rightRangeTableEntry->rtekind == RTE_SUBQUERY);
+
+				leftQuery = leftRangeTableEntry->subquery;
+				rightQuery = rightRangeTableEntry->subquery;
+
+				AddUninstantiatedPartitionRestriction(leftQuery);
+				AddUninstantiatedPartitionRestriction(rightQuery);
+
+				return;
+			}
+
 			continue;
 		}
 
@@ -1137,17 +1173,18 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 			if (PartitionMethod(rangeTableEntry->relid) != DISTRIBUTE_BY_NONE)
 			{
 				targetPartitionColumnVar = PartitionColumn(rangeTableEntry->relid,
-														   rteIndex);
+														   joinTreeTableIndex);
+
 				AddUninstantiatedEqualityQual(query, targetPartitionColumnVar);
 
 				return;
 			}
-
-			++rteIndex;
 		}
 	}
 }
 
+
+#include "nodes/print.h"
 
 /*
  * AddUninstantiatedEqualityQual adds a qual in the following form
@@ -2272,7 +2309,7 @@ RouterSelectTask(Query *originalQuery, RelationRestrictionContext *restrictionCo
  * relationShardList is filled with the list of relation-to-shard mappings for
  * the query.
  */
-static bool
+bool
 RouterSelectQuery(Query *originalQuery, RelationRestrictionContext *restrictionContext,
 				  List **placementList, uint64 *anchorShardId, List **relationShardList,
 				  bool replacePrunedQueryWithDummy)
@@ -2389,6 +2426,8 @@ RouterSelectQuery(Query *originalQuery, RelationRestrictionContext *restrictionC
 }
 
 
+#include "nodes/print.h"
+
 /*
  * TargetShardIntervalsForSelect performs shard pruning for all referenced relations
  * in the query and returns list of shards per relation. Shard pruning is done based
@@ -2416,8 +2455,6 @@ TargetShardIntervalsForSelect(Query *query,
 		Index tableId = relationRestriction->index;
 		DistTableCacheEntry *cacheEntry = DistributedTableCacheEntry(relationId);
 		int shardCount = cacheEntry->shardIntervalArrayLength;
-		List *baseRestrictionList = relationRestriction->relOptInfo->baserestrictinfo;
-		List *restrictClauseList = get_all_actual_clauses(baseRestrictionList);
 		List *prunedShardList = NIL;
 		int shardIndex = 0;
 		List *joinInfoList = relationRestriction->relOptInfo->joininfo;
@@ -2425,6 +2462,7 @@ TargetShardIntervalsForSelect(Query *query,
 		bool whereFalseQuery = false;
 
 		relationRestriction->prunedShardIntervalList = NIL;
+
 
 		/*
 		 * Queries may have contradiction clauses like 'false', or '1=0' in
@@ -2436,6 +2474,7 @@ TargetShardIntervalsForSelect(Query *query,
 		if (!whereFalseQuery && shardCount > 0)
 		{
 			List *shardIntervalList = NIL;
+			List *allActualClauses = NIL;
 
 			for (shardIndex = 0; shardIndex < shardCount; shardIndex++)
 			{
@@ -2444,8 +2483,12 @@ TargetShardIntervalsForSelect(Query *query,
 				shardIntervalList = lappend(shardIntervalList, shardInterval);
 			}
 
+			allActualClauses =
+				GetAllActualClausesForRelation(relationRestriction->relOptInfo,
+											   relationRestriction->plannerInfo);
+
 			prunedShardList = PruneShardList(relationId, tableId,
-											 restrictClauseList,
+											 allActualClauses,
 											 shardIntervalList);
 
 			/*
@@ -2465,6 +2508,89 @@ TargetShardIntervalsForSelect(Query *query,
 	}
 
 	return prunedRelationShardList;
+}
+
+
+/*
+ * GetAllActualClausesForRelation returns all the restrictions that a relation
+ * has including the baserestrictinfo and the related parts of joininfo.
+ *
+ * This function is heavily inspired by check_index_predicates() from the PostgreSQL's
+ * source file src/backend/optimizer/path/indexpath.c.
+ */
+static List *
+GetAllActualClausesForRelation(RelOptInfo *relInfo, PlannerInfo *plannerInfo)
+{
+	List *allRestrictInfos = NULL;
+	ListCell *joinInfoCell = NULL;
+	Relids otherRelIds = NULL;
+	List *allActualClauses = NIL;
+
+	/* we should definitely add all the entries in baserestrictinfo */
+	allRestrictInfos = relInfo->baserestrictinfo;
+
+	/* Scan the rel's join clauses and get the necessary ones */
+	foreach(joinInfoCell, relInfo->joininfo)
+	{
+		RestrictInfo *restrictInfo = (RestrictInfo *) lfirst(joinInfoCell);
+		List *columnList = pull_var_clause_default((Node *) restrictInfo->clause);
+
+		/* check if the restrict info already contains a hashed restrict info */
+		if (list_length(columnList) > 0)
+		{
+			Var *firstColumn = linitial(columnList);
+			Var *hashedColumn = MakeInt4Column();
+
+			if (equal(firstColumn, hashedColumn))
+			{
+				/*
+				 * This means that we've already instantiated the restrict info
+				 * so this should be included in the final restrict info list.
+				 */
+				allRestrictInfos = lappend(allRestrictInfos, restrictInfo);
+				continue;
+			}
+		}
+
+		/* check if clause can be moved to this rel */
+		if (join_clause_is_movable_to(restrictInfo, relInfo))
+		{
+			allRestrictInfos = lappend(allRestrictInfos, restrictInfo);
+		}
+	}
+
+	/*
+	 * Add on any equivalence-derivable join clauses.  Computing the correct
+	 * relid sets for generate_join_implied_equalities is slightly tricky
+	 * because the rel could be a child rel rather than a true baserel, and in
+	 * that case we must remove its parents' relid(s) from all_baserels.
+	 */
+	if (relInfo->reloptkind == RELOPT_OTHER_MEMBER_REL)
+	{
+		otherRelIds = bms_difference(plannerInfo->all_baserels,
+									 find_childrel_parents(plannerInfo, relInfo));
+	}
+	else
+	{
+		otherRelIds = bms_difference(plannerInfo->all_baserels, relInfo->relids);
+	}
+
+	if (!bms_is_empty(otherRelIds))
+	{
+		List *impliedJoinEqualities = generate_join_implied_equalities(plannerInfo,
+																	   bms_union(
+																		   relInfo->relids,
+																		   otherRelIds),
+																	   otherRelIds,
+																	   relInfo);
+
+		allRestrictInfos = list_concat(allRestrictInfos, impliedJoinEqualities);
+	}
+
+	/* finally get the actual clauses from the restrict infos */
+	allActualClauses = get_all_actual_clauses(allRestrictInfos);
+
+	return allActualClauses;
 }
 
 
@@ -2912,7 +3038,7 @@ InsertSelectQuery(Query *query)
  * plannerInfo which is read-only. All other parts of the relOptInfo is also shallowly
  * copied.
  */
-static RelationRestrictionContext *
+RelationRestrictionContext *
 CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 {
 	RelationRestrictionContext *newContext = (RelationRestrictionContext *)
@@ -2949,8 +3075,8 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 
 		/* not copyable, but readonly */
 		newRestriction->plannerInfo = oldRestriction->plannerInfo;
-		newRestriction->prunedShardIntervalList =
-			copyObject(oldRestriction->prunedShardIntervalList);
+		newRestriction->prunedShardIntervalList = NIL;
+		/* copyObject(oldRestriction->prunedShardIntervalList); */
 
 		newContext->relationRestrictionList =
 			lappend(newContext->relationRestrictionList, newRestriction);
@@ -2968,7 +3094,7 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
  * Once we see ($1 = partition column), we replace it with
  * (partCol >= shardMinValue && partCol <= shardMaxValue).
  */
-static Node *
+Node *
 InstantiatePartitionQual(Node *node, void *context)
 {
 	ShardInterval *shardInterval = (ShardInterval *) context;

@@ -115,7 +115,7 @@ static MultiTable * MultiSubqueryPushdownTable(RangeTblEntry *subqueryRangeTable
  * create logical plan and adds a root node to top of it.
  */
 MultiTreeRoot *
-MultiLogicalPlanCreate(Query *queryTree)
+MultiLogicalPlanCreate(Query *queryTree, Query *originalQuery)
 {
 	MultiNode *multiQueryNode = NULL;
 	MultiTreeRoot *rootNode = NULL;
@@ -125,7 +125,9 @@ MultiLogicalPlanCreate(Query *queryTree)
 	{
 		if (SubqueryPushdown)
 		{
-			multiQueryNode = SubqueryPushdownMultiPlanTree(queryTree, subqueryEntryList);
+			multiQueryNode = SubqueryPushdownMultiPlanTree(originalQuery,
+														   SubqueryEntryList(
+															   originalQuery));
 		}
 		else
 		{

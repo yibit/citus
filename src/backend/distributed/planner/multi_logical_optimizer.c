@@ -3000,7 +3000,7 @@ ErrorIfCannotPushdownSubquery(Query *subqueryTree, bool outerQueryHasLimit)
 	if (lateralQuery != NULL)
 	{
 		bool supportedLateralQuery = SupportedLateralQuery(subqueryTree, lateralQuery);
-		if (!supportedLateralQuery)
+		if (false && !supportedLateralQuery)
 		{
 			preconditionsSatisfied = false;
 			errorDetail = "This type of lateral query in subquery is currently "
