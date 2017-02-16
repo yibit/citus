@@ -51,6 +51,8 @@ static RelationRestrictionContext * CurrentRestrictionContext(void);
 static void PopRestrictionContext(void);
 static bool HasUnresolvedExternParamsWalker(Node *expression, ParamListInfo boundParams);
 
+#include "nodes/print.h"
+#include "distributed/citus_ruleutils.h"
 
 /* Distributed planner hook */
 PlannedStmt *

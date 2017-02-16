@@ -1109,6 +1109,7 @@ INSERT INTO agg_events
 DEBUG:  StartTransactionCommand
 DEBUG:  StartTransaction
 DEBUG:  name: unnamed; blockState:       DEFAULT; state: INPROGR, xid/subid/cid: 0/1/0, nestlvl: 1, children: 
+DEBUG:  unexpected rte kind:5
 ERROR:  INSERT INTO ... SELECT partition columns in the source table and subquery do not match
 DETAIL:  The target table's partition column should correspond to a partition column in the subquery.
 -- We do support some CTEs
@@ -1193,9 +1194,6 @@ FROM   (SELECT SUM(raw_events_second.value_4) AS v4,
 DEBUG:  StartTransactionCommand
 DEBUG:  StartTransaction
 DEBUG:  name: unnamed; blockState:       DEFAULT; state: INPROGR, xid/subid/cid: 0/1/0, nestlvl: 1, children: 
-DEBUG:  predicate pruning for shardId 13300001
-DEBUG:  predicate pruning for shardId 13300002
-DEBUG:  predicate pruning for shardId 13300003
 ERROR:  cannot perform distributed planning for the given modification
 DETAIL:  Select query cannot be pushed down to the worker.
 -- INSERT partition column does not match with SELECT partition column
@@ -1406,6 +1404,12 @@ GROUP BY outer_most.id;
 DEBUG:  StartTransactionCommand
 DEBUG:  StartTransaction
 DEBUG:  name: unnamed; blockState:       DEFAULT; state: INPROGR, xid/subid/cid: 0/1/0, nestlvl: 1, children: 
+DEBUG:  predicate pruning for shardId 13300001
+DEBUG:  predicate pruning for shardId 13300002
+DEBUG:  predicate pruning for shardId 13300003
+DEBUG:  predicate pruning for shardId 13300005
+DEBUG:  predicate pruning for shardId 13300006
+DEBUG:  predicate pruning for shardId 13300007
 ERROR:  cannot perform distributed planning for the given modification
 DETAIL:  Select query cannot be pushed down to the worker.
 -- we currently not support grouping sets

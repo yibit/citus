@@ -134,8 +134,6 @@ static List * AnchorRangeTableIdList(List *rangeTableList, List *baseRangeTableI
 static void AdjustColumnOldAttributes(List *expressionList);
 static List * RangeTableFragmentsList(List *rangeTableList, List *whereClauseList,
 									  List *dependedJobList);
-static OperatorCacheEntry * LookupOperatorByType(Oid typeId, Oid accessMethodId,
-												 int16 strategyNumber);
 static Oid GetOperatorByType(Oid typeId, Oid accessMethodId, int16 strategyNumber);
 static Node * HashableClauseMutator(Node *originalNode, Var *partitionColumn);
 static OpExpr * MakeHashedOperatorExpression(OpExpr *operatorExpression);
@@ -2009,6 +2007,8 @@ SubquerySqlTaskList(Job *job, RelationRestrictionContext *restrictionContext)
 	int shardOffset = 0;
 	int shardCount = 0;
 	DistTableCacheEntry *targetCacheEntry = NULL;
+	List *shardIntervalList = NIL;
+	Oid relationId = InvalidOid;
 
 
 	/* get list of all range tables in subquery tree */
@@ -2020,8 +2020,6 @@ SubquerySqlTaskList(Job *job, RelationRestrictionContext *restrictionContext)
 	 * fragments in this order and add these fragments to fragment combination
 	 * list.
 	 */
-	List *shardIntervalList = NIL;
-	Oid relationId;
 	foreach(rangeTableCell, rangeTableList)
 	{
 		RangeTblEntry *rangeTableEntry = (RangeTblEntry *) lfirst(rangeTableCell);
@@ -2191,6 +2189,7 @@ SubqueryTaskCreate(Query *originalQuery, ShardInterval *shardInterval,
 	subqueryTask->taskPlacementList = selectPlacementList;
 	subqueryTask->upsertQuery = upsertQuery;
 	subqueryTask->relationShardList = relationShardList;
+
 	/* modifyTask->replicationModel = cacheEntry->replicationModel; */
 
 	return subqueryTask;
@@ -2806,7 +2805,7 @@ MakeOpExpression(Var *variable, int16 strategyNumber)
  * LookupOperatorByType function errors out if it cannot find corresponding
  * default operator class with the given parameters on the system catalogs.
  */
-static OperatorCacheEntry *
+OperatorCacheEntry *
 LookupOperatorByType(Oid typeId, Oid accessMethodId, int16 strategyNumber)
 {
 	OperatorCacheEntry *matchingCacheEntry = NULL;

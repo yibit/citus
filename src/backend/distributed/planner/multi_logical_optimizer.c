@@ -154,7 +154,6 @@ static void ErrorIfUnsupportedUnionQuery(Query *unionQuery);
 static bool TargetListOnPartitionColumn(Query *query, List *targetEntryList);
 static FieldSelect * CompositeFieldRecursive(Expr *expression, Query *query);
 static bool FullCompositeFieldList(List *compositeFieldList);
-static Query * LateralQuery(Query *query);
 static bool SupportedLateralQuery(Query *parentQuery, Query *lateralQuery);
 static bool JoinOnPartitionColumn(Query *query);
 static void ErrorIfUnsupportedShardDistribution(Query *query);
@@ -3208,7 +3207,7 @@ ErrorIfUnsupportedUnionQuery(Query *unionQuery)
 
 	if (leftOpExpressionCount != rightOpExpressionCount)
 	{
-		supportedUnionQuery = false;
+		supportedUnionQuery = true;
 		errorDetail = "Union clauses need to have same count of filters on "
 					  "partition column";
 	}
@@ -3593,7 +3592,7 @@ FullCompositeFieldList(List *compositeFieldList)
  * LateralQuery walks over the given range table list and if there is a subquery
  * columns with other sibling subquery.
  */
-static Query *
+Query *
 LateralQuery(Query *query)
 {
 	Query *lateralQuery = NULL;
@@ -4101,10 +4100,10 @@ ErrorIfUnsupportedFilters(Query *subquery)
 																 newOpExpressionList);
 			if (!equalOpExpressionLists)
 			{
-				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								errmsg("cannot push down this subquery"),
-								errdetail("Currently all leaf queries need to "
-										  "have same filters on partition column")));
+				ereport(INFO, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							   errmsg("cannot push down this subquery"),
+							   errdetail("Currently all leaf queries need to "
+										 "have same filters on partition column")));
 			}
 		}
 	}

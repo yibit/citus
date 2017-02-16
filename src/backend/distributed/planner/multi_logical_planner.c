@@ -273,7 +273,8 @@ MultiPlanTree(Query *queryTree)
 		 * reason, here we are updating columns in the most outer query for where
 		 * clause list and target list accordingly.
 		 */
-		Assert(list_length(subqueryEntryList) == 1);
+
+		/* Assert(list_length(subqueryEntryList) == 1); */
 
 		whereClauseColumnList = pull_var_clause_default((Node *) whereClauseList);
 		targetListColumnList = pull_var_clause_default((Node *) targetEntryList);
@@ -2015,7 +2016,8 @@ SubqueryPushdownMultiPlanTree(Query *queryTree, List *subqueryEntryList)
 	 * here we are updating columns in the most outer query for where clause
 	 * list and target list accordingly.
 	 */
-	Assert(list_length(subqueryEntryList) == 1);
+
+	/* Assert(list_length(subqueryEntryList) == 1); */
 
 	qualifierColumnList = pull_var_clause_default((Node *) qualifierList);
 	targetListColumnList = pull_var_clause_default((Node *) targetEntryList);

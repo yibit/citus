@@ -66,6 +66,9 @@
 #include "catalog/pg_proc.h"
 #include "optimizer/planmain.h"
 
+#include "nodes/print.h"
+#include "catalog/pg_am.h"
+
 
 typedef struct WalkerState
 {
@@ -124,8 +127,10 @@ static DeferredErrorMessage * InsertPartitionColumnMatchesSelect(Query *query,
 																 subqueryRte,
 																 Oid *
 																 selectPartitionColumnTableId);
+static void RecursivelyAddUninstantiatedEqualityQualToSetOperations(Query *query);
 static void AddUninstantiatedEqualityQual(Query *query, Var *targetPartitionColumnVar);
 static DeferredErrorMessage * ErrorIfQueryHasModifyingCTE(Query *queryTree);
+static Query * FindTopLevelJoinQuery(Query *query);
 
 
 /*
@@ -1077,8 +1082,8 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 	Query *subquery = NULL;
 	RangeTblEntry *subqueryEntry = NULL;
 	Var *targetPartitionColumnVar = NULL;
-	List *queryList = NIL;
-	ListCell *queryCell = NULL;
+	ListCell *targetEntryCell = NULL;
+	List *targetList = NIL;
 
 	if (originalQuery->commandType == CMD_INSERT)
 	{
@@ -1102,89 +1107,166 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 		return;
 	}
 
-	ExtractQueryWalker((Node *) subquery, &queryList);
-	foreach(queryCell, queryList)
+	targetList = subquery->targetList;
+	foreach(targetEntryCell, targetList)
 	{
-		Query *query = (Query *) lfirst(queryCell);
-		List *rangeTableList = NIL;
-		List *joinTreeTableIndexList = NIL;
-		ListCell *joinTreeTableIndexCell = NULL;
+		TargetEntry *targetEntry = lfirst(targetEntryCell);
 
-		/* we only process leaf queries */
-		if (!LeafQuery(query))
+		if (IsPartitionColumn(targetEntry->expr, subquery) &&
+			IsA(targetEntry->expr, Var))
 		{
-			if (query->setOperations != NULL)
-			{
-				List *rangeTableList = query->rtable;
-				SetOperationStmt *unionStatement =
-					(SetOperationStmt *) query->setOperations;
-				Query *leftQuery = NULL;
-				Query *rightQuery = NULL;
-
-				RangeTblRef *leftRangeTableReference =
-					(RangeTblRef *) unionStatement->larg;
-				RangeTblRef *rightRangeTableReference =
-					(RangeTblRef *) unionStatement->rarg;
-
-				int leftTableIndex = leftRangeTableReference->rtindex - 1;
-				int rightTableIndex = rightRangeTableReference->rtindex - 1;
-
-				RangeTblEntry *leftRangeTableEntry = (RangeTblEntry *) list_nth(
-					rangeTableList,
-					leftTableIndex);
-				RangeTblEntry *rightRangeTableEntry = (RangeTblEntry *) list_nth(
-					rangeTableList,
-					rightTableIndex);
-
-				Assert(leftRangeTableEntry->rtekind == RTE_SUBQUERY);
-				Assert(rightRangeTableEntry->rtekind == RTE_SUBQUERY);
-
-				leftQuery = leftRangeTableEntry->subquery;
-				rightQuery = rightRangeTableEntry->subquery;
-
-				AddUninstantiatedPartitionRestriction(leftQuery);
-				AddUninstantiatedPartitionRestriction(rightQuery);
-
-				return;
-			}
-
-			continue;
+			targetPartitionColumnVar = (Var *) targetEntry->expr;
+			break;
 		}
+	}
 
-		rangeTableList = query->rtable;
-		ExtractRangeTableIndexWalker((Node *) query->jointree, &joinTreeTableIndexList);
 
-		foreach(joinTreeTableIndexCell, joinTreeTableIndexList)
+	/*
+	 * If we cannot find the bare partition column, no need to add the qual since
+	 * we're already going to error out on the multi planner.
+	 */
+	if (targetPartitionColumnVar)
+	{
+		AddUninstantiatedEqualityQual(subquery, targetPartitionColumnVar);
+	}
+	else if (!targetPartitionColumnVar)
+	{
+		Query *topLevelJoinQuery = FindTopLevelJoinQuery(subquery);
+		if (topLevelJoinQuery != NULL)
 		{
-			/*
-			 * Join tree's range table index starts from 1 in the query tree. But,
-			 * list indexes start from 0.
-			 */
-			int joinTreeTableIndex = lfirst_int(joinTreeTableIndexCell);
-			int rangeTableListIndex = joinTreeTableIndex - 1;
+			FromExpr *joinTree = topLevelJoinQuery->jointree;
+			List *whereClauseList = QualifierList(joinTree);
+			List *joinClauseList = JoinClauseList(whereClauseList);
 
-			RangeTblEntry *rangeTableEntry =
-				(RangeTblEntry *) list_nth(rangeTableList, rangeTableListIndex);
+			OpExpr *operatorExpression = (OpExpr *) linitial(joinClauseList);
+			List *argumentList = operatorExpression->args;
 
-			/* since the query is a leaf query, all RTEs should be relations */
-			Assert(rangeTableEntry->rtekind == RTE_RELATION);
+			/* get left and right side of the expression */
+			Node *leftArgument = (Node *) linitial(argumentList);
 
-			/* find a co-located table and add the qual */
-			if (PartitionMethod(rangeTableEntry->relid) != DISTRIBUTE_BY_NONE)
-			{
-				targetPartitionColumnVar = PartitionColumn(rangeTableEntry->relid,
-														   joinTreeTableIndex);
+			List *leftColumnList = pull_var_clause_default(leftArgument);
+			Var *leftColumn = (Var *) linitial(leftColumnList);
 
-				AddUninstantiatedEqualityQual(query, targetPartitionColumnVar);
+			AddUninstantiatedEqualityQual(topLevelJoinQuery, leftColumn);
 
-				return;
-			}
+			return;
+		}
+		else
+		{
+			RecursivelyAddUninstantiatedEqualityQualToSetOperations(subquery);
 		}
 	}
 }
 
 
-#include "nodes/print.h"
+/*TODO: sematic of this function sucks. It shouldn't call AddUninstantidated */
+static Query *
+FindTopLevelJoinQuery(Query *query)
+{
+	FromExpr *joinTree = NULL;
+	List *whereClauseList = NULL;
+	List *joinClauseList = NULL;
+	RangeTblEntry *rte = NULL;
+
+	StringInfo strInfo = makeStringInfo();
+	deparse_shard_query(query, InvalidOid, INVALID_SHARD_ID, strInfo);
+
+
+	joinTree = query->jointree;
+	whereClauseList = QualifierList(joinTree);
+	joinClauseList = JoinClauseList(whereClauseList);
+
+	if (list_length(joinClauseList) > 0)
+	{
+		return query;
+	}
+
+	rte = list_nth(query->rtable, 0);
+	if (rte->rtekind == RTE_RELATION)
+	{
+		return NULL;
+	}
+
+	if (rte->rtekind == RTE_SUBQUERY)
+	{
+		return FindTopLevelJoinQuery(rte->subquery);
+	}
+
+	return NULL;
+}
+
+
+static void
+RecursivelyAddUninstantiatedEqualityQualToSetOperations(Query *query)
+{
+	List *rangeTableList = query->rtable;
+	ListCell *rteCell = NULL;
+
+	foreach(rteCell, rangeTableList)
+	{
+		RangeTblEntry *rte = lfirst(rteCell);
+
+		if (rte->rtekind == RTE_RELATION)
+		{
+			if (PartitionColumn(rte->relid, 1) != NULL)
+			{
+				AddUninstantiatedEqualityQual(query, PartitionColumn(rte->relid, 1));
+			}
+
+			return;
+		}
+		else if (rte->rtekind == RTE_SUBQUERY)
+		{
+			Query *subquery = rte->subquery;
+			SetOperationStmt *unionStatement = NULL;
+			Query *leftQuery = NULL;
+			Query *rightQuery = NULL;
+			RangeTblRef *leftRangeTableReference = NULL;
+			RangeTblRef *rightRangeTableReference = NULL;
+			List *unionQueryRangeTableList = NULL;
+			int leftTableIndex = 0;
+			int rightTableIndex = 0;
+			RangeTblEntry *leftRangeTableEntry = NULL;
+			RangeTblEntry *rightRangeTableEntry = NULL;
+
+			if (subquery->setOperations == NULL)
+			{
+				RecursivelyAddUninstantiatedEqualityQualToSetOperations(rte->subquery);
+				return;
+			}
+
+			unionStatement = (SetOperationStmt *) subquery->setOperations;
+
+			leftRangeTableReference = (RangeTblRef *) unionStatement->larg;
+			rightRangeTableReference = (RangeTblRef *) unionStatement->rarg;
+			unionQueryRangeTableList = subquery->rtable;
+
+			leftTableIndex = leftRangeTableReference->rtindex - 1;
+			rightTableIndex = rightRangeTableReference->rtindex - 1;
+
+			leftRangeTableEntry = (RangeTblEntry *) list_nth(
+				unionQueryRangeTableList,
+				leftTableIndex);
+			rightRangeTableEntry = (RangeTblEntry *) list_nth(
+				unionQueryRangeTableList,
+				rightTableIndex);
+
+			Assert(leftRangeTableEntry->rtekind == RTE_SUBQUERY);
+			Assert(rightRangeTableEntry->rtekind == RTE_SUBQUERY);
+
+			leftQuery = leftRangeTableEntry->subquery;
+			rightQuery = rightRangeTableEntry->subquery;
+
+			RecursivelyAddUninstantiatedEqualityQualToSetOperations(leftQuery);
+			RecursivelyAddUninstantiatedEqualityQualToSetOperations(rightQuery);
+		}
+		else
+		{
+			ereport(DEBUG4, (errmsg("unexpected rte kind:%d", rte->rtekind)));
+		}
+	}
+}
+
 
 /*
  * AddUninstantiatedEqualityQual adds a qual in the following form
@@ -1200,20 +1282,46 @@ AddUninstantiatedEqualityQual(Query *query, Var *partitionColumn)
 	Oid equalsOperator = InvalidOid;
 	Oid greaterOperator = InvalidOid;
 	bool hashable = false;
+	Oid typeId = partitionColumn->vartype;
+
+	OperatorCacheEntry *operatorCacheEntry = NULL;
+	Oid accessMethodId = BTREE_AM_OID;
+	Oid operatorClassInputType = InvalidOid;
+	char typeType = 0;
+	StringInfo strInfo = makeStringInfo();
+
+	operatorCacheEntry = LookupOperatorByType(typeId, accessMethodId,
+											  BTEqualStrategyNumber);
+
+	operatorClassInputType = operatorCacheEntry->operatorClassInputType;
+	typeType = operatorCacheEntry->typeType;
+	partitionColumnCollid = partitionColumn->varcollid;
+
+	/*
+	 * Relabel variable if input type of default operator class is not equal to
+	 * the variable type. Note that we don't relabel the variable if the default
+	 * operator class variable type is a pseudo-type.
+	 */
+	if (operatorClassInputType != typeId && typeType != TYPTYPE_PSEUDO)
+	{
+		partitionColumn = (Var *) makeRelabelType((Expr *) partitionColumn,
+												  operatorClassInputType,
+												  -1, partitionColumnCollid,
+												  COERCE_IMPLICIT_CAST);
+	}
+
 
 	AssertArg(query->commandType == CMD_SELECT);
 
 	/* get the necessary equality operator */
-	get_sort_group_operators(partitionColumn->vartype, false, true, false,
+	get_sort_group_operators(typeId, false, true, false,
 							 &lessThanOperator, &equalsOperator, &greaterOperator,
 							 &hashable);
 
 
-	partitionColumnCollid = partitionColumn->varcollid;
-
 	equalityParameter->paramkind = PARAM_EXTERN;
 	equalityParameter->paramid = UNINSTANTIATED_PARAMETER_ID;
-	equalityParameter->paramtype = partitionColumn->vartype;
+	equalityParameter->paramtype = operatorClassInputType;
 	equalityParameter->paramtypmod = partitionColumn->vartypmod;
 	equalityParameter->paramcollid = partitionColumnCollid;
 	equalityParameter->location = -1;
@@ -1241,6 +1349,11 @@ AddUninstantiatedEqualityQual(Query *query, Var *partitionColumn)
 		query->jointree->quals = make_and_qual(query->jointree->quals,
 											   (Node *) uninstantiatedEqualityQual);
 	}
+
+
+	deparse_shard_query(query, InvalidOid, INVALID_SHARD_ID, strInfo);
+
+	/* elog(INFO,"%s", strInfo->data); */
 }
 
 
@@ -3076,6 +3189,7 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 		/* not copyable, but readonly */
 		newRestriction->plannerInfo = oldRestriction->plannerInfo;
 		newRestriction->prunedShardIntervalList = NIL;
+
 		/* copyObject(oldRestriction->prunedShardIntervalList); */
 
 		newContext->relationRestrictionList =

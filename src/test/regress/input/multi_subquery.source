@@ -620,69 +620,6 @@ FROM
 		tenant_id,
 		user_id) AS subquery;
 
-SELECT
-	avg(array_length(events, 1)) AS event_average,
-	hasdone
-FROM
-	(SELECT
-		subquery_1.tenant_id,
-		subquery_1.user_id,
-		array_agg(event ORDER BY event_time) AS events,
-		COALESCE(hasdone, 'Has not done paying') AS hasdone
-	FROM
-	(
-		(SELECT
-			(users.composite_id).tenant_id,
-			(users.composite_id).user_id,
-			(users.composite_id),
-			'action=>1'AS event,
-			events.event_time
-		FROM
-			users,
-			events
-		WHERE
-			(users.composite_id) = (events.composite_id) AND
-			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
-			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
-			event_type = 'click')
-		UNION
-		(SELECT
-			(users.composite_id).tenant_id,
-			(users.composite_id).user_id,
-			(users.composite_id),
-			'action=>2'AS event,
-			events.event_time
-		FROM
-			users,
-			events
-		WHERE
-			(users.composite_id) = (events.composite_id) AND
-			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
-			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
-			event_type = 'submit')
-	) AS subquery_1
-	LEFT JOIN
-	(SELECT
-		composite_id,
-		(composite_id).tenant_id,
-		(composite_id).user_id,
-		'Has done paying'::TEXT AS hasdone
-	FROM
-		events
-	WHERE
-		events.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
-		events.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
-		event_type = 'pay') AS subquery_2
-	ON
-		subquery_1.composite_id = subquery_2.composite_id 
-	GROUP BY
-		subquery_1.tenant_id,
-		subquery_1.user_id,
-		hasdone) AS subquery_top
-GROUP BY
-	hasdone;
-
-
 -- Union and left join subquery pushdown
 SELECT
 	avg(array_length(events, 1)) AS event_average,
@@ -699,13 +636,13 @@ FROM
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>1'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'click')
@@ -714,20 +651,20 @@ FROM
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>2'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'submit')
 	) AS subquery_1
 	LEFT JOIN
 	(SELECT
-		DISTINCT ON ((composite_id).tenant_id, (composite_id).user_id) composite_id,
+		DISTINCT composite_id,
 		(composite_id).tenant_id,
 		(composite_id).user_id,
 		'Has done paying'::TEXT AS hasdone
@@ -738,8 +675,7 @@ FROM
 		events.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 		event_type = 'pay') AS subquery_2
 	ON
-		subquery_1.tenant_id = subquery_2.tenant_id AND
-		subquery_1.user_id = subquery_2.user_id
+		subquery_1.composite_id = subquery_2.composite_id
 	GROUP BY
 		subquery_1.tenant_id,
 		subquery_1.user_id,
@@ -763,13 +699,13 @@ SELECT
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>1'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'click')
@@ -778,22 +714,21 @@ SELECT
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>2'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'submit')
 	) AS subquery_1
 	LEFT JOIN
 		(SELECT
-			(composite_id).tenant_id,
-			(composite_id).user_id,
-			COUNT(*) AS count_pay
+			COUNT(*) AS count_pay,
+			composite_id
 		FROM
 			events
 		WHERE
@@ -801,13 +736,11 @@ SELECT
 			events.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'pay'
 		GROUP BY
-			tenant_id,
-			user_id
+			composite_id
 		HAVING
 			COUNT(*) > 2) AS subquery_2
 	ON
-		subquery_1.tenant_id = subquery_2.tenant_id AND
-		subquery_1.user_id = subquery_2.user_id
+		subquery_1.composite_id = subquery_2.composite_id
 	GROUP BY
 		subquery_1.tenant_id,
 		subquery_1.user_id,
@@ -835,6 +768,7 @@ FROM
 		(SELECT
 			(composite_id).tenant_id,
 			(composite_id).user_id,
+			composite_id,
 			lastseen
 		FROM
 			users
@@ -849,12 +783,12 @@ FROM
 		LEFT JOIN LATERAL
 			(SELECT
 				event_type,
-				event_time
+				event_time,
+				composite_id
 			FROM
 				events
 			WHERE
-				(composite_id).tenant_id = subquery_top.tenant_id AND
-				(composite_id).user_id = subquery_top.user_id
+				(composite_id) = subquery_top.composite_id
 			ORDER BY
 				event_time DESC
 			LIMIT
@@ -914,13 +848,13 @@ FROM
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>1'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'click')
@@ -929,20 +863,20 @@ FROM
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>2'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'submit')
 	) AS subquery_1
 	LEFT JOIN
 	(SELECT
-		DISTINCT ON ((composite_id).tenant_id, (composite_id).user_id) composite_id,
+		DISTINCT composite_id,
 		(composite_id).tenant_id,
 		(composite_id).user_id,
 		'Has done paying'::TEXT AS hasdone
@@ -953,8 +887,7 @@ FROM
 		events.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 		event_type = 'pay') AS subquery_2
 	ON
-		subquery_1.tenant_id = subquery_2.tenant_id AND
-		subquery_1.user_id = subquery_2.user_id
+		subquery_1.composite_id = subquery_2.composite_id
 	GROUP BY
 		subquery_1.tenant_id,
 		subquery_1.user_id,
@@ -978,13 +911,13 @@ EXPLAIN SELECT
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>1'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'click')
@@ -993,22 +926,21 @@ EXPLAIN SELECT
 			(users.composite_id).tenant_id,
 			(users.composite_id).user_id,
 			'action=>2'AS event,
-			events.event_time
+			events.event_time,
+			users.composite_id
 		FROM
 			users,
 			events
 		WHERE
-			(users.composite_id).tenant_id = (events.composite_id).tenant_id AND
-			(users.composite_id).user_id = (events.composite_id).user_id AND
+			(users.composite_id) = (events.composite_id) AND
 			users.composite_id >= '(1, -9223372036854775808)'::user_composite_type AND
 			users.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'submit')
 	) AS subquery_1
 	LEFT JOIN
 		(SELECT
-			(composite_id).tenant_id,
-			(composite_id).user_id,
-			COUNT(*) AS count_pay
+			COUNT(*) AS count_pay,
+			composite_id
 		FROM
 			events
 		WHERE
@@ -1016,13 +948,11 @@ EXPLAIN SELECT
 			events.composite_id <= '(1, 9223372036854775807)'::user_composite_type AND
 			event_type = 'pay'
 		GROUP BY
-			tenant_id,
-			user_id
+			composite_id
 		HAVING
 			COUNT(*) > 2) AS subquery_2
 	ON
-		subquery_1.tenant_id = subquery_2.tenant_id AND
-		subquery_1.user_id = subquery_2.user_id
+		subquery_1.composite_id = subquery_2.composite_id
 	GROUP BY
 		subquery_1.tenant_id,
 		subquery_1.user_id,

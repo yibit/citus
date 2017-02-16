@@ -125,6 +125,7 @@ extern List * ReplaceColumnsInOpExpressionList(List *opExpressionList, Var *newC
 extern bool IsPartitionColumn(Expr *columnExpression, Query *query);
 extern void FindReferencedTableColumn(Expr *columnExpression, List *parentQueryList,
 									  Query *query, Oid *relationId, Var **column);
+extern Query * LateralQuery(Query *query);
 
 
 #endif   /* MULTI_LOGICAL_OPTIMIZER_H */

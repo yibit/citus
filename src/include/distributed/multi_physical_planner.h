@@ -282,6 +282,7 @@ extern List * TaskListDifference(const List *list1, const List *list2);
 extern List * TaskListUnion(const List *list1, const List *list2);
 extern List * AssignAnchorShardTaskList(List *taskList);
 extern List * FirstReplicaAssignTaskList(List *taskList);
-
+extern OperatorCacheEntry * LookupOperatorByType(Oid typeId, Oid accessMethodId,
+												 int16 strategyNumber);
 
 #endif   /* MULTI_PHYSICAL_PLANNER_H */
