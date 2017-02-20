@@ -72,6 +72,14 @@ typedef struct WalkerState
 	bool badCoalesce;
 } WalkerState;
 
+
+typedef struct InstantiateQualWalker
+{
+	ShardInterval *targetShardInterval;
+	Var *relationPartitionColumn;
+}InstantiateQualWalker;
+
+
 bool EnableRouterExecution = true;
 
 /* planner functions forward declarations */
@@ -377,6 +385,9 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 	{
 		RelationRestriction *restriction = lfirst(restrictionCell);
 		List *originalBaserestrictInfo = restriction->relOptInfo->baserestrictinfo;
+		InstantiateQualWalker *instantiateQualWalker =
+			palloc0(sizeof(InstantiateQualWalker));
+		Var *relationPartitionKey = PartitionKey(restriction->relationId);
 
 		/*
 		 * We haven't added the quals if all participating tables are reference
@@ -387,9 +398,12 @@ RouterModifyTaskForShardInterval(Query *originalQuery, ShardInterval *shardInter
 			break;
 		}
 
+		instantiateQualWalker->relationPartitionColumn = relationPartitionKey;
+		instantiateQualWalker->targetShardInterval = shardInterval;
+
 		originalBaserestrictInfo =
 			(List *) InstantiatePartitionQual((Node *) originalBaserestrictInfo,
-											  shardInterval);
+											  instantiateQualWalker);
 	}
 
 	/*
@@ -2950,7 +2964,10 @@ CopyRelationRestrictionContext(RelationRestrictionContext *oldContext)
 static Node *
 InstantiatePartitionQual(Node *node, void *context)
 {
-	ShardInterval *shardInterval = (ShardInterval *) context;
+	InstantiateQualWalker *instantiateContext = ((InstantiateQualWalker *) context);
+	ShardInterval *shardInterval = instantiateContext->targetShardInterval;
+	Var *relationPartitionColumn = instantiateContext->relationPartitionColumn;
+
 	Assert(shardInterval->minValueExists);
 	Assert(shardInterval->maxValueExists);
 
@@ -2974,6 +2991,7 @@ InstantiatePartitionQual(Node *node, void *context)
 		Node *leftop = get_leftop((Expr *) op);
 		Node *rightop = get_rightop((Expr *) op);
 		Param *param = NULL;
+		Var *currentColumn = NULL;
 
 		Var *hashedGEColumn = NULL;
 		OpExpr *hashedGEOpExpr = NULL;
@@ -2992,14 +3010,39 @@ InstantiatePartitionQual(Node *node, void *context)
 		if (IsA(leftop, Param))
 		{
 			param = (Param *) leftop;
+
+			/*
+			 * Before instantiating the qual, ensure that it is equal to
+			 * the partition key.
+			 */
+			if (IsA(rightop, Var))
+			{
+				currentColumn = (Var *) rightop;
+			}
 		}
 		else if (IsA(rightop, Param))
 		{
 			param = (Param *) rightop;
+
+			/*
+			 * Before instantiating the qual, ensure that it is equal to
+			 * the partition key.
+			 */
+			if (IsA(leftop, Var))
+			{
+				currentColumn = (Var *) leftop;
+			}
 		}
 
 		/* not an interesting param for our purpose, so return */
 		if (!(param && param->paramid == UNINSTANTIATED_PARAMETER_ID))
+		{
+			return node;
+		}
+
+		/* if the qual is not on the partition column, do not instantiate */
+		if (relationPartitionColumn && currentColumn &&
+			currentColumn->varattno != relationPartitionColumn->varattno)
 		{
 			return node;
 		}
