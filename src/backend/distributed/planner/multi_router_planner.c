@@ -144,6 +144,10 @@ static DeferredErrorMessage * InsertPartitionColumnMatchesSelect(Query *query,
 																 selectPartitionColumnTableId);
 static void AddUninstantiatedEqualityQual(Query *query, Var *targetPartitionColumnVar);
 static DeferredErrorMessage * ErrorIfQueryHasModifyingCTE(Query *queryTree);
+static void CachedRelationLookup(const char *relationName, Oid *cachedOid);
+
+#include "catalog/pg_namespace.h"
+#include "parser/parse_func.h"
 
 
 /*
@@ -376,7 +380,7 @@ AllRelationRestrictionsContainUninstantiatedQual(
 			RestrictInfo *restrictInfo = (RestrictInfo *) lfirst(restrictionCell);
 
 			relationHasRestriction = relationHasRestriction ||
-									 HasUninstantiatedQualWalker(restrictInfo->clause,
+									 HasUninstantiatedQualWalker((Node *)restrictInfo->clause,
 																 NULL);
 
 			if (relationHasRestriction)
@@ -854,10 +858,10 @@ InsertSelectQuerySupported(Query *queryTree, RangeTblEntry *insertRte,
 
 	if (!AllRelationRestrictionsContainUninstantiatedQual(restrictionContext))
 	{
-		return DeferredError(ERRCODE_FEATURE_NOT_SUPPORTED,
-							 "cannot plan distributed query since all join conditions in the query "
-							 "need include two distribution keys using an equality operator",
-							 NULL, NULL);
+	//	return DeferredError(ERRCODE_FEATURE_NOT_SUPPORTED,
+		//					 "cannot plan distributed query since all join conditions in the query "
+			//				 "need include two distribution keys using an equality operator",
+				//			 NULL, NULL);
 
 	}
 
@@ -1256,9 +1260,27 @@ AddUninstantiatedPartitionRestriction(Query *originalQuery)
 static void
 AddUninstantiatedEqualityQual(Query *query, Var *partitionColumn)
 {
-	Param *equalityParameter = makeNode(Param);
+	Oid functionOid = InvalidOid;
+	List *args = list_make1(partitionColumn);
+
+	List *nameList = NIL;
+	Oid paramOids[1] = { ANYOID };
+
+	if (functionOid == InvalidOid)
+	{
+		nameList = list_make2(makeString("pg_catalog"),
+							  makeString("citus_stable_function_int"));
+		functionOid = LookupFuncName(nameList, 0, paramOids, false);
+	}
+
+
+
+	FuncExpr *equalityFunction = makeFuncExpr(functionOid, INT4OID, args,
+											partitionColumn->varcollid,
+											partitionColumn->varcollid,
+											COERCE_EXPLICIT_CALL);
+
 	OpExpr *uninstantiatedEqualityQual = NULL;
-	Oid partitionColumnCollid = InvalidOid;
 	Oid lessThanOperator = InvalidOid;
 	Oid equalsOperator = InvalidOid;
 	Oid greaterOperator = InvalidOid;
@@ -1271,23 +1293,13 @@ AddUninstantiatedEqualityQual(Query *query, Var *partitionColumn)
 							 &lessThanOperator, &equalsOperator, &greaterOperator,
 							 &hashable);
 
-
-	partitionColumnCollid = partitionColumn->varcollid;
-
-	equalityParameter->paramkind = PARAM_EXTERN;
-	equalityParameter->paramid = UNINSTANTIATED_PARAMETER_ID;
-	equalityParameter->paramtype = partitionColumn->vartype;
-	equalityParameter->paramtypmod = partitionColumn->vartypmod;
-	equalityParameter->paramcollid = partitionColumnCollid;
-	equalityParameter->location = -1;
-
 	/* create an equality on the on the target partition column */
 	uninstantiatedEqualityQual = (OpExpr *) make_opclause(equalsOperator, InvalidOid,
 														  false,
 														  (Expr *) partitionColumn,
-														  (Expr *) equalityParameter,
-														  partitionColumnCollid,
-														  partitionColumnCollid);
+														  (Expr *) equalityFunction,
+														  partitionColumn->varcollid,
+														  partitionColumn->varcollid);
 
 	/* update the operators with correct operator numbers and function ids */
 	uninstantiatedEqualityQual->opfuncid = get_opcode(uninstantiatedEqualityQual->opno);
@@ -3168,7 +3180,7 @@ InstantiatePartitionQual(Node *node, void *context)
 		OpExpr *op = (OpExpr *) node;
 		Node *leftop = get_leftop((Expr *) op);
 		Node *rightop = get_rightop((Expr *) op);
-		Param *param = NULL;
+		FuncExpr *funcExpr = NULL;
 		Var *currentColumn = NULL;
 
 		Var *hashedGEColumn = NULL;
@@ -3183,11 +3195,12 @@ InstantiatePartitionQual(Node *node, void *context)
 
 		Oid integer4GEoperatorId = InvalidOid;
 		Oid integer4LEoperatorId = InvalidOid;
+		Oid functionOid = InvalidOid;
 
 		/* look for the Params */
-		if (IsA(leftop, Param))
+		if (IsA(leftop, FuncExpr))
 		{
-			param = (Param *) leftop;
+			funcExpr = (FuncExpr *) leftop;
 
 			/*
 			 * Before instantiating the qual, ensure that it is equal to
@@ -3198,9 +3211,9 @@ InstantiatePartitionQual(Node *node, void *context)
 				currentColumn = (Var *) rightop;
 			}
 		}
-		else if (IsA(rightop, Param))
+		else if (IsA(rightop, FuncExpr))
 		{
-			param = (Param *) rightop;
+			funcExpr = (FuncExpr *) rightop;
 
 			/*
 			 * Before instantiating the qual, ensure that it is equal to
@@ -3212,8 +3225,21 @@ InstantiatePartitionQual(Node *node, void *context)
 			}
 		}
 
+
+		//CachedRelationLookup("citus_stable_function", &functionOid);
+
+		List *nameList = NIL;
+		Oid paramOids[1] = { ANYOID };
+
+		if (functionOid == InvalidOid)
+		{
+			nameList = list_make2(makeString("pg_catalog"),
+								  makeString("citus_stable_function_int"));
+			functionOid = LookupFuncName(nameList, 0, paramOids, false);
+		}
+
 		/* not an interesting param for our purpose, so return */
-		if (!(param && param->paramid == UNINSTANTIATED_PARAMETER_ID))
+		if (!(funcExpr && funcExpr->funcid == functionOid))
 		{
 			return node;
 		}

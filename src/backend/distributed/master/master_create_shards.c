@@ -52,7 +52,7 @@
 
 /* declarations for dynamic loading */
 PG_FUNCTION_INFO_V1(master_create_worker_shards);
-
+PG_FUNCTION_INFO_V1(citus_stable_function);
 
 /*
  * master_create_worker_shards is a user facing function to create worker shards
@@ -70,6 +70,15 @@ master_create_worker_shards(PG_FUNCTION_ARGS)
 	EnsureCoordinator();
 
 	CreateShardsWithRoundRobinPolicy(distributedTableId, shardCount, replicationFactor);
+
+	PG_RETURN_VOID();
+}
+
+
+Datum
+citus_stable_function(PG_FUNCTION_ARGS)
+{
+	elog(ERROR, "opps shouldn't call?");
 
 	PG_RETURN_VOID();
 }
