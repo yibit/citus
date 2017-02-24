@@ -59,4 +59,6 @@ extern void multi_relation_restriction_hook(PlannerInfo *root, RelOptInfo *relOp
 extern bool IsModifyCommand(Query *query);
 extern void VerifyMultiPlanValidity(struct MultiPlan *multiPlan);
 
+extern Query * replace_pg_table_size_calls(Query *query);
+
 #endif /* MULTI_PLANNER_H */

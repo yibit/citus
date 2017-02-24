@@ -60,6 +60,7 @@ multi_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	bool needsDistributedPlanning = NeedsDistributedPlanning(parse);
 	Query *originalQuery = NULL;
 	RelationRestrictionContext *restrictionContext = NULL;
+	Query *rewrittenQuery;
 
 	/*
 	 * standard_planner scribbles on it's input, but for deparsing we need the
@@ -101,11 +102,12 @@ multi_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		 * planner relies on parse tree transformations made by postgres' planner.
 		 */
 
-		result = standard_planner(parse, cursorOptions, boundParams);
+		rewrittenQuery = replace_pg_table_size_calls(parse);
+		result = standard_planner(rewrittenQuery, cursorOptions, boundParams);
 
 		if (needsDistributedPlanning)
 		{
-			result = CreateDistributedPlan(result, originalQuery, parse,
+			result = CreateDistributedPlan(result, originalQuery, rewrittenQuery,
 										   boundParams, restrictionContext);
 		}
 	}
