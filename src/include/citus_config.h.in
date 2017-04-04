@@ -11,16 +11,10 @@
 
 
 /* Extension version expected by this Citus build */
-#undef CITUS_EXTENSIONVERSION
+#undef EXTENSIONVERSION
 
 /* Citus major version as a string */
-#undef CITUS_MAJORVERSION
-
-/* Citus version as a string */
-#undef CITUS_VERSION
-
-/* Citus version as a number */
-#undef CITUS_VERSION_NUM
+#undef MAJORVERSION
 
 /* Define to the address where bug reports for this package should be sent. */
 #undef PACKAGE_BUGREPORT
@@ -39,3 +33,6 @@
 
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
+
+/* Citus version as a number */
+#undef VERSION_NUM

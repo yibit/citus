@@ -13,7 +13,7 @@ include Makefile.global
 all: extension
 
 # build extension
-extension: $(citus_abs_srcdir)/src/include/citus_version.h
+extension: $(citus_abs_srcdir)/src/include/citus_config.h
 	$(MAKE) -C src/backend/distributed/ all
 install-extension: extension
 	$(MAKE) -C src/backend/distributed/ install

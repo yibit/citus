@@ -16,7 +16,7 @@
 #include "fmgr.h"
 #include "miscadmin.h"
 
-#include "citus_version.h"
+#include "citus_config.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
 #include "distributed/citus_nodefuncs.h"
@@ -618,7 +618,7 @@ RegisterCitusConfigVariables(void)
 		gettext_noop("Shows the running Citus version"),
 		NULL,
 		&CitusVersion,
-		CITUS_VERSION,
+		CITUS_PACKAGE_VERSION,
 		PGC_INTERNAL,
 		0,
 		NULL, NULL, NULL);
