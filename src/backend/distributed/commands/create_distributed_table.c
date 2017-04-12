@@ -683,7 +683,7 @@ ErrorIfNotSupportedForeignConstraint(Relation relation, char distributionMethod,
 			 * Partition column must exist in both referencing and referenced side of the
 			 * foreign key constraint. They also must be in same ordinal.
 			 */
-			referencedTablePartitionColumn = PartitionKey(referencedTableId);
+			referencedTablePartitionColumn = DistPartitionKey(referencedTableId);
 		}
 		else
 		{

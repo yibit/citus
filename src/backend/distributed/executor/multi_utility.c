@@ -1503,7 +1503,7 @@ ErrorIfUnsupportedIndexStmt(IndexStmt *createIndexStatement)
 		/* caller uses ShareLock for non-concurrent indexes, use the same lock here */
 		LOCKMODE lockMode = ShareLock;
 		Oid relationId = RangeVarGetRelid(relation, lockMode, missingOk);
-		Var *partitionKey = PartitionKey(relationId);
+		Var *partitionKey = DistPartitionKey(relationId);
 		char partitionMethod = PartitionMethod(relationId);
 		List *indexParameterList = NIL;
 		ListCell *indexParameterCell = NULL;
@@ -1651,7 +1651,7 @@ ErrorIfUnsupportedAlterTableStmt(AlterTableStmt *alterTableStatement)
 					continue;
 				}
 
-				partitionColumn = PartitionKey(relationId);
+				partitionColumn = DistPartitionKey(relationId);
 
 				tuple = SearchSysCacheAttName(relationId, alterColumnName);
 				if (HeapTupleIsValid(tuple))
@@ -1803,8 +1803,8 @@ ErrorIfUnsupportedAlterTableStmt(AlterTableStmt *alterTableStatement)
 				 * Partition column must exist in both referencing and referenced side
 				 * of the foreign key constraint. They also must be in same ordinal.
 				 */
-				referencingTablePartitionColumn = PartitionKey(referencingTableId);
-				referencedTablePartitionColumn = PartitionKey(referencedTableId);
+				referencingTablePartitionColumn = DistPartitionKey(referencingTableId);
+				referencedTablePartitionColumn = DistPartitionKey(referencedTableId);
 
 				/*
 				 * We iterate over fk_attrs and pk_attrs together because partition

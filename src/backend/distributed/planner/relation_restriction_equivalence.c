@@ -196,7 +196,7 @@ RestrictionEquivalenceForPartitionKeys(
 			(RelationRestriction *) lfirst(relationRestrictionCell);
 		int rteIdentity = GetRTEIdentity(relationRestriction->rte);
 
-		if (PartitionKey(relationRestriction->relationId) &&
+		if (DistPartitionKey(relationRestriction->relationId) &&
 			!bms_is_member(rteIdentity, commonRteIdentities))
 		{
 			return false;
@@ -660,7 +660,7 @@ AddToAttributeEquivalenceClass(AttributeEquivalenceClass **attributeEquivalanceC
 			return;
 		}
 
-		relationPartitionKey = PartitionKey(relationId);
+		relationPartitionKey = DistPartitionKey(relationId);
 		if (relationPartitionKey->varattno != varToBeAdded->varattno)
 		{
 			return;

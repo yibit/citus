@@ -3333,7 +3333,7 @@ IsPartitionColumn(Expr *columnExpression, Query *query)
 
 	if (relationId != InvalidOid && column != NULL)
 	{
-		Var *partitionColumn = PartitionKey(relationId);
+		Var *partitionColumn = DistPartitionKey(relationId);
 
 		/* not all distributed tables have partition column */
 		if (partitionColumn != NULL && column->varattno == partitionColumn->varattno)
@@ -4255,7 +4255,7 @@ PartitionColumnOpExpressionList(Query *query)
 		Assert(rangeTableEntry->rtekind == RTE_RELATION);
 
 		relationId = rangeTableEntry->relid;
-		partitionColumn = PartitionKey(relationId);
+		partitionColumn = DistPartitionKey(relationId);
 
 		if (partitionColumn != NULL &&
 			candidatePartitionColumn->varattno == partitionColumn->varattno)
