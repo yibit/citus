@@ -37,6 +37,7 @@ sub Usage()
     print "  --server-option     	Config option to pass to the server\n";
     print "  --valgrind          	Run server via valgrind\n";
     print "  --valgrind-path     	Path to the valgrind executable\n";
+    print "  --valgrind-log-file	Path to the write valgrind logs\n";
     print "  --pg_ctl-timeout    	Timeout for pg_ctl\n";
     print "  --connection-timeout	Timeout for connecting to worker nodes\n";
     exit 1;
@@ -60,6 +61,7 @@ my %functions = ();
 my %operators = ();
 my $valgrind = 0;
 my $valgrind_path = "valgrind";
+my $valgrind_log_file = "valgrind_test.log";
 my $pg_ctl_timeout = undef;
 my $connection_timeout = 5000;
 
@@ -78,6 +80,7 @@ GetOptions(
     'server-option=s' => \@userPgOptions,
     'valgrind' => \$valgrind,
     'valgrind-path=s' => \$valgrind_path,
+    'valgrind-log-file=s' => \$valgrind_log_file,
     'pg_ctl-timeout=s' => \$pg_ctl_timeout,
     'connection-timeout=s' => \$connection_timeout,
     'help' => sub { Usage() });
@@ -175,10 +178,10 @@ sub replace_postgres
 exec $valgrind_path \\
     --quiet \\
     --suppressions=${postgresSrcdir}/src/tools/valgrind.supp \\
-    --trace-children=yes --track-origins=yes --read-var-info=yes \\
+    --trace-children=yes --track-origins=yes --read-var-info=no \\
     --leak-check=no \\
-    --error-exitcode=128 \\
     --error-markers=VALGRINDERROR-BEGIN,VALGRINDERROR-END \\
+    --log-file=$valgrind_log_file \\
     $bindir/postgres.orig \\
     "\$@"
 END
