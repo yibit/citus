@@ -9,6 +9,7 @@
  */
 
 #include "postgres.h"
+#include "pgstat.h"
 
 #include "libpq-fe.h"
 
@@ -401,7 +402,12 @@ GetRemoteCommandResult(MultiConnection *connection, bool raiseInterrupts)
 		/* this means we have to wait for data to go out */
 		Assert(rc == 1);
 
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+		rc = WaitLatchOrSocket(MyLatch, waitFlags | WL_SOCKET_WRITEABLE, socket, 0,
+							   PG_WAIT_EXTENSION);
+#else
 		rc = WaitLatchOrSocket(MyLatch, waitFlags | WL_SOCKET_WRITEABLE, socket, 0);
+#endif
 
 		if (rc & WL_POSTMASTER_DEATH)
 		{
@@ -451,7 +457,12 @@ GetRemoteCommandResult(MultiConnection *connection, bool raiseInterrupts)
 			break;
 		}
 
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+		rc = WaitLatchOrSocket(MyLatch, waitFlags | WL_SOCKET_READABLE, socket, 0,
+							   PG_WAIT_EXTENSION);
+#else
 		rc = WaitLatchOrSocket(MyLatch, waitFlags | WL_SOCKET_READABLE, socket, 0);
+#endif
 
 		if (rc & WL_POSTMASTER_DEATH)
 		{
