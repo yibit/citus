@@ -490,7 +490,11 @@ GetTableCreationCommands(Oid relationId, bool includeSequenceDefaults)
 {
 	List *tableDDLEventList = NIL;
 	char tableType = 0;
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+	List *sequenceIdlist = getOwnedSequences(relationId, InvalidAttrNumber);
+#else
 	List *sequenceIdlist = getOwnedSequences(relationId);
+#endif
 	ListCell *sequenceIdCell;
 	char *tableSchemaDef = NULL;
 	char *tableColumnOptionsDef = NULL;
