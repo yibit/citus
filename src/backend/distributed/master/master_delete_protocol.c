@@ -110,10 +110,15 @@ master_apply_delete_command(PG_FUNCTION_ARGS)
 	bool dontWait = false;
 	char partitionMethod = 0;
 	bool failOK = false;
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+	RawStmt *rawStmt = (RawStmt *) ParseTreeRawStmt(queryString);
+	queryTreeNode = rawStmt->stmt;
+#else
+	queryTreeNode = ParseTreeNode(queryString);
+#endif
 
 	EnsureCoordinator();
 
-	queryTreeNode = ParseTreeNode(queryString);
 	if (!IsA(queryTreeNode, DeleteStmt))
 	{
 		ereport(ERROR, (errmsg("query \"%s\" is not a delete statement",
@@ -136,7 +141,11 @@ master_apply_delete_command(PG_FUNCTION_ARGS)
 	CheckDistributedTable(relationId);
 	EnsureTablePermissions(relationId, ACL_DELETE);
 
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+	queryTreeList = pg_analyze_and_rewrite(rawStmt, queryString, NULL, 0, NULL);
+#else
 	queryTreeList = pg_analyze_and_rewrite(queryTreeNode, queryString, NULL, 0);
+#endif
 	deleteQuery = (Query *) linitial(queryTreeList);
 	CheckTableCount(deleteQuery);
 
