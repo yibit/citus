@@ -45,6 +45,9 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+#include "utils/regproc.h"
+#endif
 #include "utils/rel.h"
 #include "utils/relcache.h"
 #include "utils/syscache.h"
