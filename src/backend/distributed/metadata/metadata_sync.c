@@ -923,7 +923,11 @@ EnsureSupportedSequenceColumnType(Oid sequenceOid)
 	bool hasMetadataWorkers = HasMetadataWorkers();
 
 	/* call sequenceIsOwned in order to get the tableId and columnId */
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+	sequenceIsOwned(sequenceOid, DEPENDENCY_AUTO, &tableId, &columnId);
+#else
 	sequenceIsOwned(sequenceOid, &tableId, &columnId);
+#endif
 
 	shouldSyncMetadata = ShouldSyncTableMetadata(tableId);
 
