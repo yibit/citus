@@ -942,8 +942,13 @@ RecordDistributedRelationDependencies(Oid distributedRelationId, Node *distribut
 	recordDependencyOn(&relationAddr, &citusExtensionAddr, DEPENDENCY_NORMAL);
 
 	/* make sure the distribution key column/expression does not just go away */
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+	recordDependencyOnSingleRelExpr(&relationAddr, distributionKey, distributedRelationId,
+									DEPENDENCY_NORMAL, DEPENDENCY_NORMAL, false);
+#else
 	recordDependencyOnSingleRelExpr(&relationAddr, distributionKey, distributedRelationId,
 									DEPENDENCY_NORMAL, DEPENDENCY_NORMAL);
+#endif
 }
 
 
