@@ -245,7 +245,8 @@ FROM   (SELECT raw_events_second.user_id AS id,
         FROM   raw_events_first, 
                raw_events_second 
         WHERE  raw_events_first.user_id = raw_events_second.user_id) AS foo 
-GROUP  BY id; 
+GROUP  BY id
+ORDER  BY id;
 
 
 -- subquery one more level depth 
@@ -262,7 +263,8 @@ FROM   (SELECT SUM(raw_events_second.value_4) AS v4,
         FROM   raw_events_first, 
                raw_events_second 
         WHERE  raw_events_first.user_id = raw_events_second.user_id 
-        GROUP  BY raw_events_second.user_id) AS foo; 
+        GROUP  BY raw_events_second.user_id) AS foo
+ORDER  BY id;
 
 -- join between subqueries
 INSERT INTO agg_events

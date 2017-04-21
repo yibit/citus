@@ -219,8 +219,7 @@ FROM
 	lineitem li JOIN orders o ON li.l_orderkey = o.o_orderkey
 WHERE 
 	li.l_quantity > 25
-ORDER BY
-	li.l_quantity
+ORDER BY 1, 2, 3
 LIMIT 10 OFFSET 20;
 
 RESET client_min_messages;
