@@ -6,9 +6,6 @@
 -- process a distributed unsupported SQL subquery.
 
 
-ALTER SEQUENCE pg_catalog.pg_dist_shardid_seq RESTART 1030000;
-
-
 SELECT * FROM lineitem WHERE l_orderkey IN
 	(SELECT l_orderkey FROM lineitem WHERE l_quantity > 0);
 
