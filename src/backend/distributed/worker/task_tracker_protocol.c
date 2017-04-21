@@ -280,13 +280,14 @@ CreateJobSchema(StringInfo schemaName)
 
 	createSchemaStmt = makeNode(CreateSchemaStmt);
 	createSchemaStmt->schemaname = schemaName->data;
-	createSchemaStmt->authrole = (Node *) &currentUserRole;
 	createSchemaStmt->schemaElts = NIL;
 
 	/* actually create schema with the current user as owner */
 #if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+	createSchemaStmt->authrole = &currentUserRole;
 	CreateSchemaCommand(createSchemaStmt, queryString, -1, -1);
 #else
+	createSchemaStmt->authrole = (Node *) &currentUserRole;
 	CreateSchemaCommand(createSchemaStmt, queryString);
 #endif
 
