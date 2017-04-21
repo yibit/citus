@@ -1748,7 +1748,7 @@ CitusCopyDestReceiverStartup(DestReceiver *dest, int operation,
 
 	/* prevent concurrent placement changes and non-commutative DML statements */
 	LockShardListMetadata(shardIntervalList, ShareLock);
-	LockShardListResources(shardIntervalList, ShareLock);
+	LockShardListResources(shardIntervalList, RowExclusiveLock);
 
 	/* keep the table metadata to avoid looking it up for every tuple */
 	copyDest->tableMetadata = cacheEntry;
