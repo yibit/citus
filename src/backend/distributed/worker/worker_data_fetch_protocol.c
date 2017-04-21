@@ -31,6 +31,7 @@
 #include "distributed/multi_client_executor.h"
 #include "distributed/multi_logical_optimizer.h"
 #include "distributed/multi_server_executor.h"
+#include "distributed/multi_utility.h"
 #include "distributed/relay_utility.h"
 #include "distributed/resource_lock.h"
 #include "distributed/task_tracker.h"
@@ -41,6 +42,10 @@
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#if (PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 110000)
+#include "utils/regproc.h"
+#include "utils/varlena.h"
+#endif
 
 
 /* Config variable managed via guc.c */
