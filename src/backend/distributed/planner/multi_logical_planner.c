@@ -130,6 +130,8 @@ static MultiNode * ApplyCartesianProduct(MultiNode *leftNode, MultiNode *rightNo
  * Local functions forward declarations for subquery pushdown. Note that these
  * functions will be removed with upcoming subqery changes.
  */
+static Node * ReplaceExternParamsOnOriginalQuery(Node *inputNode,
+												 ParamListInfo boundParams);
 static MultiNode * MultiSubqueryPlanTree(Query *originalQuery,
 										 Query *queryTree,
 										 PlannerRestrictionContext *
@@ -148,6 +150,15 @@ static MultiTable * MultiSubqueryPushdownTable(Query *subquery);
  * plan and adds a root node to top of it. The  original query is only used for subquery
  * pushdown planning.
  *
+ * In order to support external parameters for the queries where planning
+ * is done on the original query, we need to replace the external parameters
+ * manually. To achive that for subquery pushdown planning, we pass boundParams
+ * to this function.
+ *
+ * Note that although router planner uses original query, the above does not
+ * apply given that we send the parameters to the workers explicitly on the
+ * execution.
+ *
  * We also pass queryTree and plannerRestrictionContext to the planner. They
  * are primarily used to decide whether the subquery is safe to pushdown.
  * If not, it helps to produce meaningful error messages for subquery
@@ -155,7 +166,8 @@ static MultiTable * MultiSubqueryPushdownTable(Query *subquery);
  */
 MultiTreeRoot *
 MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
-					   PlannerRestrictionContext *plannerRestrictionContext)
+					   PlannerRestrictionContext *plannerRestrictionContext,
+					   ParamListInfo boundParams)
 {
 	MultiNode *multiQueryNode = NULL;
 	MultiTreeRoot *rootNode = NULL;
@@ -169,6 +181,14 @@ MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
 	subqueryEntryList = SubqueryEntryList(queryTree);
 	if (subqueryEntryList != NIL)
 	{
+		/* consider replacing external parameters only when boundParams exists */
+		if (boundParams)
+		{
+			originalQuery =
+				(Query *) ReplaceExternParamsOnOriginalQuery((Node *) originalQuery,
+															 boundParams);
+		}
+
 		multiQueryNode = MultiSubqueryPlanTree(originalQuery, queryTree,
 											   plannerRestrictionContext);
 	}
@@ -182,6 +202,94 @@ MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
 	SetChild((MultiUnaryNode *) rootNode, multiQueryNode);
 
 	return rootNode;
+}
+
+
+/*
+ * ReplaceExternParamsOnOriginalQuery replaces the external parameters that appears
+ * on the query with the corresponding entries on the boundParams.
+ *
+ * Note that this function is inspired by eval_const_expr() on Postgres. We failed to
+ * use that function given that it requires access to PlannerInfo and does evaluations
+ * on other parts of the query.
+ */
+static Node *
+ReplaceExternParamsOnOriginalQuery(Node *inputNode, ParamListInfo boundParams)
+{
+	int parameterIndex = 0;
+
+	Assert(boundParams != NULL);
+
+	if (inputNode == NULL)
+	{
+		return NULL;
+	}
+
+	if (IsA(inputNode, Param))
+	{
+		Param *paramToProcess = (Param *) inputNode;
+		ParamExternData correspondingParameterData;
+		int numberOfParameters = boundParams->numParams;
+		int parameterId = paramToProcess->paramid;
+		int16 typeLength = 0;
+		bool typeByValue = false;
+		Datum constValue = 0;
+		bool paramIsNull = false;
+
+		if (paramToProcess->paramkind != PARAM_EXTERN)
+		{
+			return inputNode;
+		}
+
+		if (parameterId < 0)
+		{
+			return inputNode;
+		}
+
+		/* parameterId starts from 1 */
+		parameterIndex = parameterId - 1;
+		if (parameterIndex >= numberOfParameters)
+		{
+			return inputNode;
+		}
+
+		correspondingParameterData = boundParams->params[parameterIndex];
+
+		if (!(correspondingParameterData.pflags & PARAM_FLAG_CONST))
+		{
+			return inputNode;
+		}
+
+		get_typlenbyval(paramToProcess->paramtype, &typeLength, &typeByValue);
+
+		paramIsNull = correspondingParameterData.isnull;
+		if (paramIsNull)
+		{
+			constValue = 0;
+		}
+		else if (typeByValue)
+		{
+			constValue = correspondingParameterData.value;
+		}
+		else
+		{
+			constValue = datumCopy(correspondingParameterData.value, typeByValue,
+								   typeLength);
+		}
+
+		return (Node *) makeConst(paramToProcess->paramtype, paramToProcess->paramtypmod,
+								  paramToProcess->paramcollid, typeLength, constValue,
+								  paramIsNull, typeByValue);
+	}
+	else if (IsA(inputNode, Query))
+	{
+		return (Node *) query_tree_mutator((Query *) inputNode,
+										   ReplaceExternParamsOnOriginalQuery,
+										   boundParams, 0);
+	}
+
+	return expression_tree_mutator(inputNode, ReplaceExternParamsOnOriginalQuery,
+								   boundParams);
 }
 
 
