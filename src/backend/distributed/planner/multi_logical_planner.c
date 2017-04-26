@@ -23,6 +23,7 @@
 #include "distributed/multi_logical_optimizer.h"
 #include "distributed/multi_logical_planner.h"
 #include "distributed/multi_physical_planner.h"
+#include "distributed/multi_router_planner.h"
 #include "distributed/worker_protocol.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -1578,6 +1579,11 @@ NeedsDistributedPlanning(Query *queryTree)
 		commandType != CMD_UPDATE && commandType != CMD_DELETE)
 	{
 		return false;
+	}
+
+	if (InsertSelectQuery(queryTree))
+	{
+		return true;
 	}
 
 	/* extract range table entries for simple relations only */

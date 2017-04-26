@@ -85,9 +85,6 @@ static MultiPlan * CreateSingleTaskRouterPlan(Query *originalQuery,
 											  Query *query,
 											  RelationRestrictionContext *
 											  restrictionContext);
-static MultiPlan * CreateInsertSelectRouterPlan(Query *originalQuery,
-												PlannerRestrictionContext *
-												plannerRestrictionContext);
 static Task * RouterModifyTaskForShardInterval(Query *originalQuery,
 											   ShardInterval *shardInterval,
 											   RelationRestrictionContext *
@@ -174,92 +171,33 @@ MultiPlan *
 CreateModifyPlan(Query *originalQuery, Query *query,
 				 PlannerRestrictionContext *plannerRestrictionContext)
 {
-	if (InsertSelectQuery(originalQuery))
-	{
-		return CreateInsertSelectRouterPlan(originalQuery, plannerRestrictionContext);
-	}
-	else
-	{
-		RelationRestrictionContext *relationRestrictionContext =
-			plannerRestrictionContext->relationRestrictionContext;
-
-		return CreateSingleTaskRouterPlan(originalQuery, query,
-										  relationRestrictionContext);
-	}
-}
-
-
-/*
- * CreateSingleTaskRouterPlan creates a physical plan for given query. The created plan is
- * either a modify task that changes a single shard, or a router task that returns
- * query results from a single worker. Supported modify queries (insert/update/delete)
- * are router plannable by default. If query is not router plannable then either NULL is
- * returned, or the returned plan has planningError set to a description of the problem.
- */
-static MultiPlan *
-CreateSingleTaskRouterPlan(Query *originalQuery, Query *query,
-						   RelationRestrictionContext *restrictionContext)
-{
-	CmdType commandType = query->commandType;
-	bool modifyTask = false;
-	Job *job = NULL;
+	Oid distributedTableId = ExtractFirstDistributedTableId(originalQuery);
+	ShardInterval *targetShardInterval = NULL;
 	Task *task = NULL;
+	Job *job = NULL;
 	List *placementList = NIL;
 	MultiPlan *multiPlan = CitusMakeNode(MultiPlan);
 
 	multiPlan->operation = query->commandType;
 
-	if (commandType == CMD_INSERT || commandType == CMD_UPDATE ||
-		commandType == CMD_DELETE)
+	multiPlan->planningError = ModifyQuerySupported(query);
+	if (multiPlan->planningError != NULL)
 	{
-		modifyTask = true;
+		return multiPlan;
 	}
 
-	if (modifyTask)
+	targetShardInterval = TargetShardIntervalForModify(distributedTableId, query,
+													   &multiPlan->planningError);
+	if (multiPlan->planningError != NULL)
 	{
-		Oid distributedTableId = ExtractFirstDistributedTableId(originalQuery);
-		ShardInterval *targetShardInterval = NULL;
-		DeferredErrorMessage *planningError = NULL;
-
-		/* FIXME: this should probably rather be inlined into CreateModifyPlan */
-		planningError = ModifyQuerySupported(query);
-		if (planningError != NULL)
-		{
-			multiPlan->planningError = planningError;
-			return multiPlan;
-		}
-
-		targetShardInterval = TargetShardIntervalForModify(distributedTableId, query,
-														   &planningError);
-		if (planningError != NULL)
-		{
-			multiPlan->planningError = planningError;
-			return multiPlan;
-		}
-
-		task = RouterModifyTask(distributedTableId, originalQuery, targetShardInterval);
-		Assert(task);
-	}
-	else
-	{
-		/* FIXME: this should probably rather be inlined into CreateSelectPlan */
-		multiPlan->planningError = ErrorIfQueryHasModifyingCTE(query);
-		if (multiPlan->planningError)
-		{
-			return multiPlan;
-		}
-		task = RouterSelectTask(originalQuery, restrictionContext, &placementList);
+		return multiPlan;
 	}
 
-	if (task == NULL)
-	{
-		return NULL;
-	}
+	task = RouterModifyTask(distributedTableId, originalQuery, targetShardInterval);
 
 	ereport(DEBUG2, (errmsg("Creating router plan")));
 
 	job = RouterQueryJob(originalQuery, task, placementList);
-
 	multiPlan->workerJob = job;
 	multiPlan->masterQuery = NULL;
 	multiPlan->routerExecutable = true;
@@ -275,14 +213,58 @@ CreateSingleTaskRouterPlan(Query *originalQuery, Query *query,
 
 
 /*
+ * CreateSingleTaskRouterPlan creates a physical plan for given query. The created plan is
+ * either a modify task that changes a single shard, or a router task that returns
+ * query results from a single worker. Supported modify queries (insert/update/delete)
+ * are router plannable by default. If query is not router plannable then either NULL is
+ * returned, or the returned plan has planningError set to a description of the problem.
+ */
+static MultiPlan *
+CreateSingleTaskRouterPlan(Query *originalQuery, Query *query,
+						   RelationRestrictionContext *restrictionContext)
+{
+	Job *job = NULL;
+	Task *task = NULL;
+	List *placementList = NIL;
+	MultiPlan *multiPlan = CitusMakeNode(MultiPlan);
+
+	multiPlan->operation = query->commandType;
+
+	/* FIXME: this should probably rather be inlined into CreateSelectPlan */
+	multiPlan->planningError = ErrorIfQueryHasModifyingCTE(query);
+	if (multiPlan->planningError)
+	{
+		return multiPlan;
+	}
+
+	task = RouterSelectTask(originalQuery, restrictionContext, &placementList);
+	if (task == NULL)
+	{
+		return NULL;
+	}
+
+	ereport(DEBUG2, (errmsg("Creating router plan")));
+
+	job = RouterQueryJob(originalQuery, task, placementList);
+
+	multiPlan->workerJob = job;
+	multiPlan->masterQuery = NULL;
+	multiPlan->routerExecutable = true;
+	multiPlan->hasReturning = false;
+
+	return multiPlan;
+}
+
+
+/*
  * Creates a router plan for INSERT ... SELECT queries which could consists of
  * multiple tasks.
  *
  * The function never returns NULL, it errors out if cannot create the multi plan.
  */
-static MultiPlan *
-CreateInsertSelectRouterPlan(Query *originalQuery,
-							 PlannerRestrictionContext *plannerRestrictionContext)
+MultiPlan *
+CreateDistributedInsertSelectPlan(Query *originalQuery,
+								  PlannerRestrictionContext *plannerRestrictionContext)
 {
 	int shardOffset = 0;
 	List *sqlTaskList = NIL;
@@ -754,8 +736,6 @@ ExtractInsertRangeTableEntry(Query *query)
 	List *rangeTableList = query->rtable;
 	RangeTblEntry *insertRTE = NULL;
 
-	AssertArg(InsertSelectQuery(query));
-
 	insertRTE = rt_fetch(resultRelation, rangeTableList);
 
 	return insertRTE;
@@ -850,6 +830,13 @@ InsertSelectQuerySupported(Query *queryTree, RangeTblEntry *insertRte,
 								 "column value must be colocated",
 								 NULL, NULL);
 		}
+	}
+
+	if (!NeedsDistributedPlanning(subquery))
+	{
+		return DeferredError(ERRCODE_FEATURE_NOT_SUPPORTED,
+							 "can only insert from a distributed tables",
+							 NULL, NULL);
 	}
 
 	return NULL;
@@ -2924,6 +2911,7 @@ InsertSelectQuery(Query *query)
 	List *fromList = NULL;
 	RangeTblRef *rangeTableReference = NULL;
 	RangeTblEntry *subqueryRte = NULL;
+	RangeTblEntry *insertRte = NULL;
 
 	if (commandType != CMD_INSERT)
 	{
@@ -2942,7 +2930,10 @@ InsertSelectQuery(Query *query)
 	}
 
 	rangeTableReference = linitial(fromList);
-	Assert(IsA(rangeTableReference, RangeTblRef));
+	if (!IsA(rangeTableReference, RangeTblRef))
+	{
+		return false;
+	}
 
 	subqueryRte = rt_fetch(rangeTableReference->rtindex, query->rtable);
 	if (subqueryRte->rtekind != RTE_SUBQUERY)
@@ -2952,6 +2943,12 @@ InsertSelectQuery(Query *query)
 
 	/* ensure that there is a query */
 	Assert(IsA(subqueryRte->subquery, Query));
+
+	insertRte = ExtractInsertRangeTableEntry(query);
+	if (!IsDistributedTable(insertRte->relid))
+	{
+		return false;
+	}
 
 	return true;
 }

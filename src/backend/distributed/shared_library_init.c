@@ -127,7 +127,8 @@ _PG_init(void)
 	 * (thus as the innermost/last running hook) to be able to do our
 	 * duties. For simplicity insist that all hooks are previously unused.
 	 */
-	if (planner_hook != NULL || ProcessUtility_hook != NULL)
+	if (planner_hook != NULL || ProcessUtility_hook != NULL ||
+		ExecutorStart_hook != NULL || ExecutorRun_hook != NULL)
 	{
 		ereport(ERROR, (errmsg("Citus has to be loaded first"),
 						errhint("Place citus at the beginning of "
@@ -152,6 +153,10 @@ _PG_init(void)
 
 	/* intercept planner */
 	planner_hook = multi_planner;
+
+	/* intercept executor */
+	ExecutorStart_hook = multi_ExecutorStart;
+	ExecutorRun_hook = multi_ExecutorRun;
 
 	/* register utility hook */
 	ProcessUtility_hook = multi_ProcessUtility;

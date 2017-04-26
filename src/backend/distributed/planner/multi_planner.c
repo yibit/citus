@@ -50,6 +50,11 @@ static CustomScanMethods RouterCustomScanMethods = {
 	RouterCreateScan
 };
 
+static CustomScanMethods LocalInsertSelectCustomScanMethods = {
+	"Citus LocalInsertSelect",
+	LocalInsertSelectCreateScan
+};
+
 static CustomScanMethods DelayedErrorCustomScanMethods = {
 	"Citus Delayed Error",
 	DelayedErrorCreateScan
@@ -273,9 +278,33 @@ CreateDistributedPlan(PlannedStmt *localPlan, Query *originalQuery, Query *query
 
 	if (IsModifyCommand(query))
 	{
-		/* modifications are always routed through the same planner/executor */
-		distributedPlan =
-			CreateModifyPlan(originalQuery, query, plannerRestrictionContext);
+		if (InsertSelectQuery(originalQuery))
+		{
+			DeferredErrorMessage *originalError = NULL;
+
+			distributedPlan = CreateDistributedInsertSelectPlan(originalQuery,
+																plannerRestrictionContext);
+
+			if (distributedPlan->planningError != NULL)
+			{
+				originalError = distributedPlan->planningError;
+
+				/* if INSERT..SELECT cannot be distributed, pull to master */
+				distributedPlan = CreateLocalInsertSelectPlan(originalQuery);
+			}
+
+			if (distributedPlan->planningError != NULL)
+			{
+				/* prefer error messages from CreateDistributedInsertSelectPlan */
+				distributedPlan->planningError = originalError;
+			}
+		}
+		else
+		{
+			/* modifications are always routed through the same planner/executor */
+			distributedPlan =
+				CreateModifyPlan(originalQuery, query, plannerRestrictionContext);
+		}
 
 		Assert(distributedPlan);
 	}
@@ -467,7 +496,11 @@ FinalizePlan(PlannedStmt *localPlan, MultiPlan *multiPlan)
 	Node *multiPlanData = NULL;
 	MultiExecutorType executorType = MULTI_EXECUTOR_INVALID_FIRST;
 
-	if (!multiPlan->planningError)
+	if (multiPlan->insertSelectQuery)
+	{
+		executorType = MULTI_EXECUTOR_LOCAL_INSERT_SELECT;
+	}
+	else if (!multiPlan->planningError)
 	{
 		executorType = JobExecutorType(multiPlan);
 	}
@@ -492,6 +525,12 @@ FinalizePlan(PlannedStmt *localPlan, MultiPlan *multiPlan)
 			break;
 		}
 
+		case MULTI_EXECUTOR_LOCAL_INSERT_SELECT:
+		{
+			customScan->methods = &LocalInsertSelectCustomScanMethods;
+			break;
+		}
+
 		default:
 		{
 			customScan->methods = &DelayedErrorCustomScanMethods;
@@ -505,7 +544,12 @@ FinalizePlan(PlannedStmt *localPlan, MultiPlan *multiPlan)
 	customScan->flags = CUSTOMPATH_SUPPORT_BACKWARD_SCAN;
 
 	/* check if we have a master query */
-	if (multiPlan->masterQuery)
+	/*if (multiPlan->insertSelectQuery)
+	{
+		localPlan->planTree = (Plan *) customScan;
+		finalPlan = localPlan;
+	}
+	else */if (multiPlan->masterQuery)
 	{
 		finalPlan = FinalizeNonRouterPlan(localPlan, multiPlan, customScan);
 	}
@@ -905,4 +949,44 @@ HasUnresolvedExternParamsWalker(Node *expression, ParamListInfo boundParams)
 									  HasUnresolvedExternParamsWalker,
 									  boundParams);
 	}
+}
+
+
+/*
+ * IsLocalInsertSelectPlan returns whether the given plan is for a
+ * locally executed INSERT..SELECT into a distributed table.
+ */
+bool
+IsLocalInsertSelectPlan(PlannedStmt *planStatement)
+{
+	Plan *planNode = planStatement->planTree;
+	CustomScan *customScan = NULL;
+	const CustomScanMethods *scanMethods = NULL;
+	const char *scanName = NULL;
+
+	if (!IsA(planNode, CustomScan))
+	{
+		return false;
+	}
+
+	customScan = (CustomScan *) planNode;
+	scanMethods = customScan->methods;
+
+	if (scanMethods == NULL)
+	{
+		return false;
+	}
+
+	scanName = scanMethods->CustomName;
+	if (scanName == NULL)
+	{
+		return false;
+	}
+
+	if (strcmp(scanName, LocalInsertSelectCustomScanMethods.CustomName) != 0)
+	{
+		return false;
+	}
+
+	return true;
 }

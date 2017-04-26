@@ -15,6 +15,8 @@
 #include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
+#include "distributed/insert_select_executor.h"
+#include "distributed/multi_copy.h"
 #include "distributed/multi_executor.h"
 #include "distributed/multi_master_planner.h"
 #include "distributed/multi_planner.h"
@@ -26,6 +28,7 @@
 #include "executor/execdebug.h"
 #include "commands/copy.h"
 #include "nodes/makefuncs.h"
+#include "parser/parsetree.h"
 #include "storage/lmgr.h"
 #include "tcop/utility.h"
 #include "utils/snapmgr.h"
@@ -80,11 +83,79 @@ static CustomExecMethods RouterSelectCustomExecMethods = {
 	.ExplainCustomScan = CitusExplainScan
 };
 
+static CustomExecMethods LocalInsertSelectCustomExecMethods = {
+	.CustomName = "LocalInsertSelectScan",
+	.BeginCustomScan = NULL,
+	.ExecCustomScan = NULL,
+	.EndCustomScan = NULL,
+	.ReScanCustomScan = NULL,
+	.ExplainCustomScan = CitusExplainScan
+};
+
 
 /* local function forward declarations */
 static void PrepareMasterJobDirectory(Job *workerJob);
 static void LoadTuplesIntoTupleStore(CitusScanState *citusScanState, Job *workerJob);
 static Relation StubRelation(TupleDesc tupleDescriptor);
+
+
+/*
+ * multi_ExecutorStart is called at the beginning of execution.
+ *
+ * We use it to replace the DestReceiver of the QueryDesc in case of an
+ * INSERT..SELECT into a distributed table that cannot be pushed down.
+ */
+void
+multi_ExecutorStart(QueryDesc *queryDesc, int eflags)
+{
+	PlannedStmt *planStatement = queryDesc->plannedstmt;
+
+	if (IsLocalInsertSelectPlan(planStatement))
+	{
+		eflags |= EXEC_FLAG_CITUS_INSERT_SELECT;
+
+		LocalInsertSelectExecutorStart(queryDesc, eflags);
+	}
+	else
+	{
+		standard_ExecutorStart(queryDesc, eflags);
+	}
+}
+
+
+/*
+ * multi_ExecutorRun is called during execution.
+ *
+ * We use it to briefly override the operation in the QueryDesc in order to
+ * trigger DestReceiver.
+ */
+void
+multi_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, tuplecount_t count)
+{
+	int eflags = queryDesc->estate->es_top_eflags;
+
+	if (eflags & EXEC_FLAG_CITUS_INSERT_SELECT)
+	{
+		/*
+		 * Pretend to the executor that we're performing a SELECT to
+		 * trigger DestReceiver calls.
+		 */
+		queryDesc->operation = CMD_SELECT;
+	}
+
+	/* drop into the standard executor */
+	standard_ExecutorRun(queryDesc, direction, count);
+
+	if (eflags & EXEC_FLAG_CITUS_INSERT_SELECT)
+	{
+		/*
+		 * Before starting the INSERT..SELECT command we changed the operation
+		 * to CMD_SELECT to send tuples to DestReceiver. Now change it back
+		 * to give the appropriate command tag.
+		 */
+		queryDesc->operation = CMD_INSERT;
+	}
+}
 
 
 /*
@@ -162,6 +233,25 @@ RouterCreateScan(CustomScan *scan)
 		Assert(isModificationQuery);
 		scanState->customScanState.methods = &RouterMultiModifyCustomExecMethods;
 	}
+
+	return (Node *) scanState;
+}
+
+
+/*
+ * LocalInsertSelectCrateScan creates the scan state for locally
+ * executed INSERT..SELECT queries into a distributed table.
+ */
+Node *
+LocalInsertSelectCreateScan(CustomScan *scan)
+{
+	CitusScanState *scanState = palloc0(sizeof(CitusScanState));
+
+	scanState->executorType = MULTI_EXECUTOR_LOCAL_INSERT_SELECT;
+	scanState->customScanState.ss.ps.type = T_CustomScanState;
+	scanState->multiPlan = GetMultiPlan(scan);
+
+	scanState->customScanState.methods = &LocalInsertSelectCustomExecMethods;
 
 	return (Node *) scanState;
 }

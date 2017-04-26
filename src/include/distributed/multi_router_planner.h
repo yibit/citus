@@ -31,6 +31,9 @@ extern MultiPlan * CreateRouterPlan(Query *originalQuery, Query *query,
 extern MultiPlan * CreateModifyPlan(Query *originalQuery, Query *query,
 									PlannerRestrictionContext *
 									plannerRestrictionContext);
+extern MultiPlan * CreateDistributedInsertSelectPlan(Query *originalQuery,
+													 PlannerRestrictionContext *
+													 plannerRestrictionContext);
 
 extern DeferredErrorMessage * ModifyQuerySupported(Query *queryTree);
 extern Query * ReorderInsertSelectTargetLists(Query *originalQuery,
