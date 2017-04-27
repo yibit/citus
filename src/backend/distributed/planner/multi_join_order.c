@@ -77,7 +77,7 @@ static JoinOrderNode * EvaluateJoinRules(List *joinedTableList,
 static List * RangeTableIdList(List *tableList);
 static RuleEvalFunction JoinRuleEvalFunction(JoinRuleType ruleType);
 static char * JoinRuleName(JoinRuleType ruleType);
-static JoinOrderNode * BroadcastJoin(JoinOrderNode *joinNode, TableEntry *candidateTable,
+static JoinOrderNode * ReferenceJoin(JoinOrderNode *joinNode, TableEntry *candidateTable,
 									 List *candidateShardList,
 									 List *applicableJoinClauses,
 									 JoinType joinType);
@@ -1086,7 +1086,7 @@ JoinRuleEvalFunction(JoinRuleType ruleType)
 
 	if (!ruleEvalFunctionsInitialized)
 	{
-		RuleEvalFunctionArray[BROADCAST_JOIN] = &BroadcastJoin;
+		RuleEvalFunctionArray[BROADCAST_JOIN] = &ReferenceJoin;
 		RuleEvalFunctionArray[LOCAL_PARTITION_JOIN] = &LocalJoin;
 		RuleEvalFunctionArray[SINGLE_PARTITION_JOIN] = &SinglePartitionJoin;
 		RuleEvalFunctionArray[DUAL_PARTITION_JOIN] = &DualPartitionJoin;
@@ -1135,7 +1135,7 @@ JoinRuleName(JoinRuleType ruleType)
  * partition key and method. Otherwise, the function returns null.
  */
 static JoinOrderNode *
-BroadcastJoin(JoinOrderNode *currentJoinNode, TableEntry *candidateTable,
+ReferenceJoin(JoinOrderNode *currentJoinNode, TableEntry *candidateTable,
 			  List *candidateShardList, List *applicableJoinClauses,
 			  JoinType joinType)
 {
@@ -1143,7 +1143,7 @@ BroadcastJoin(JoinOrderNode *currentJoinNode, TableEntry *candidateTable,
 	int candidateShardCount = list_length(candidateShardList);
 	int leftShardCount = list_length(currentJoinNode->shardIntervalList);
 	int applicableJoinCount = list_length(applicableJoinClauses);
-	bool performBroadcastJoin = false;
+	bool performReferenceJoin = false;
 
 	if (applicableJoinCount <= 0)
 	{
@@ -1172,26 +1172,25 @@ BroadcastJoin(JoinOrderNode *currentJoinNode, TableEntry *candidateTable,
 				PartitionMethod(initialCandidateShardInterval->relationId);
 		}
 
-		if (candidatePartitionMethod == DISTRIBUTE_BY_NONE ||
-			candidateShardCount < LargeTableShardCount)
+		if (candidatePartitionMethod == DISTRIBUTE_BY_NONE)
 		{
-			performBroadcastJoin = true;
+			performReferenceJoin = true;
 		}
 	}
 	else if ((joinType == JOIN_LEFT || joinType == JOIN_ANTI) && candidateShardCount == 1)
 	{
-		performBroadcastJoin = true;
+		performReferenceJoin = true;
 	}
 	else if (joinType == JOIN_RIGHT && leftShardCount == 1)
 	{
-		performBroadcastJoin = true;
+		performReferenceJoin = true;
 	}
 	else if (joinType == JOIN_FULL && leftShardCount == 1 && candidateShardCount == 1)
 	{
-		performBroadcastJoin = true;
+		performReferenceJoin = true;
 	}
 
-	if (performBroadcastJoin)
+	if (performReferenceJoin)
 	{
 		nextJoinNode = MakeJoinOrderNode(candidateTable, BROADCAST_JOIN,
 										 currentJoinNode->partitionColumn,
