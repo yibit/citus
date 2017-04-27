@@ -636,6 +636,9 @@ ProcessCopyStmt(CopyStmt *copyStatement, char *completionTag, bool *commandMustR
 
 			isDistributedRelation = IsDistributedTable(RelationGetRelid(copiedRelation));
 
+			/* copy statement to avoid changing a prepared statement */
+			copyStatement = copyObject(copyStatement);
+
 			/* ensure future lookups hit the same relation */
 			copyStatement->relation->schemaname = get_namespace_name(
 				RelationGetNamespace(copiedRelation));
@@ -781,7 +784,16 @@ PlanIndexStmt(IndexStmt *createIndexStatement, const char *createIndexCommand)
 
 		isDistributedRelation = IsDistributedTable(relationId);
 
-		/* ensure future lookups hit the same relation */
+		/* copy statement to avoid changing a prepared statement */
+		createIndexStatement = copyObject(createIndexStatement);
+
+		/*
+		 * Before we do any further processing, fix the schema name to make sure
+		 * that a (distributed) table with the same name does not appear on the
+		 * search path in front of the current schema. We do this even if the
+		 * table is not distributed, since a distributed table may appear on the
+		 * search path by the time postgres starts processing this statement.
+		 */
 		namespaceName = get_namespace_name(RelationGetNamespace(relation));
 		createIndexStatement->relation->schemaname = namespaceName;
 
@@ -2569,19 +2581,11 @@ CreateIndexTaskList(Oid relationId, IndexStmt *indexStmt)
 	List *taskList = NIL;
 	List *shardIntervalList = LoadShardIntervalList(relationId);
 	ListCell *shardIntervalCell = NULL;
-	Oid schemaId = get_rel_namespace(relationId);
-	char *schemaName = get_namespace_name(schemaId);
 	StringInfoData ddlString;
 	uint64 jobId = INVALID_JOB_ID;
 	int taskId = 1;
 
 	initStringInfo(&ddlString);
-
-	/* set statement's schema name if it is not set already */
-	if (indexStmt->relation->schemaname == NULL)
-	{
-		indexStmt->relation->schemaname = schemaName;
-	}
 
 	/* lock metadata before getting placement lists */
 	LockShardListMetadata(shardIntervalList, ShareLock);
