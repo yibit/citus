@@ -211,8 +211,7 @@ MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
  * in the query with the corresponding entries in the boundParams.
  *
  * Note that this function is inspired by eval_const_expr() on Postgres. We cannot
- * use that function because it requires access to PlannerInfo and does evaluations
- * on other parts of the query.
+ * use that function because it requires access to PlannerInfo.
  */
 static Node *
 ReplaceExternParamsInOriginalQuery(Node *inputNode, ParamListInfo boundParams)
