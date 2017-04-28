@@ -130,7 +130,7 @@ static MultiNode * ApplyCartesianProduct(MultiNode *leftNode, MultiNode *rightNo
  * Local functions forward declarations for subquery pushdown. Note that these
  * functions will be removed with upcoming subqery changes.
  */
-static Node * ReplaceExternParamsOnOriginalQuery(Node *inputNode,
+static Node * ReplaceExternParamsInOriginalQuery(Node *inputNode,
 												 ParamListInfo boundParams);
 static MultiNode * MultiSubqueryPlanTree(Query *originalQuery,
 										 Query *queryTree,
@@ -185,7 +185,7 @@ MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
 		if (boundParams)
 		{
 			originalQuery =
-				(Query *) ReplaceExternParamsOnOriginalQuery((Node *) originalQuery,
+				(Query *) ReplaceExternParamsInOriginalQuery((Node *) originalQuery,
 															 boundParams);
 		}
 
@@ -206,15 +206,15 @@ MultiLogicalPlanCreate(Query *originalQuery, Query *queryTree,
 
 
 /*
- * ReplaceExternParamsOnOriginalQuery replaces the external parameters that appears
- * on the query with the corresponding entries on the boundParams.
+ * ReplaceExternParamsInOriginalQuery replaces the external parameters that appears
+ * in the query with the corresponding entries in the boundParams.
  *
- * Note that this function is inspired by eval_const_expr() on Postgres. We failed to
- * use that function given that it requires access to PlannerInfo and does evaluations
+ * Note that this function is inspired by eval_const_expr() on Postgres. We cannot
+ * use that function because it requires access to PlannerInfo and does evaluations
  * on other parts of the query.
  */
 static Node *
-ReplaceExternParamsOnOriginalQuery(Node *inputNode, ParamListInfo boundParams)
+ReplaceExternParamsInOriginalQuery(Node *inputNode, ParamListInfo boundParams)
 {
 	int parameterIndex = 0;
 
@@ -284,11 +284,11 @@ ReplaceExternParamsOnOriginalQuery(Node *inputNode, ParamListInfo boundParams)
 	else if (IsA(inputNode, Query))
 	{
 		return (Node *) query_tree_mutator((Query *) inputNode,
-										   ReplaceExternParamsOnOriginalQuery,
+										   ReplaceExternParamsInOriginalQuery,
 										   boundParams, 0);
 	}
 
-	return expression_tree_mutator(inputNode, ReplaceExternParamsOnOriginalQuery,
+	return expression_tree_mutator(inputNode, ReplaceExternParamsInOriginalQuery,
 								   boundParams);
 }
 
