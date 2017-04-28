@@ -153,7 +153,8 @@ static MultiTable * MultiSubqueryPushdownTable(Query *subquery);
  * In order to support external parameters for the queries where planning
  * is done on the original query, we need to replace the external parameters
  * manually. To achive that for subquery pushdown planning, we pass boundParams
- * to this function.
+ * to this function. We need to do that since Citus currently unable to send
+ * parameters to the workers on the execution.
  *
  * Note that although router planner uses original query, the above does not
  * apply given that we send the parameters to the workers explicitly on the
